@@ -39,6 +39,7 @@ class ConfigurationDialog(QDialog):
         self.validated_config: AppConfig | None = None
         self._config = config
 
+        # The tree mirrors the nested JSON profile while editing only leaf values.
         self.tree = QTreeWidget()
         self.tree.setObjectName("configuration_tree")
         self.tree.setColumnCount(2)
@@ -50,6 +51,7 @@ class ConfigurationDialog(QDialog):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
 
+        # File actions remain inside this window so all paths share validation.
         load_button = QPushButton("Load File")
         load_button.setObjectName("load_config_file")
         save_file_button = QPushButton("Save File")
@@ -81,6 +83,7 @@ class ConfigurationDialog(QDialog):
         self._rebuild_tree()
 
     def _rebuild_tree(self) -> None:
+        # Recreate every item after loading so paths and original types stay accurate.
         self.tree.clear()
         raw = self._config.to_dict()
         root = self.tree.invisibleRootItem()
@@ -99,6 +102,7 @@ class ConfigurationDialog(QDialog):
     ) -> None:
         tooltip = self._tooltip(path)
         if isinstance(value, dict):
+            # Mapping nodes organize fields but are not directly editable.
             item = QTreeWidgetItem(parent, (name, ""))
             item.setToolTip(0, tooltip)
             item.setToolTip(1, tooltip)
@@ -106,6 +110,7 @@ class ConfigurationDialog(QDialog):
                 self._add_value(item, str(key), child, (*path, str(key)))
             return
 
+        # Leaf items retain their path and type for later parsing and reconstruction.
         item = QTreeWidgetItem(parent, (name, self._format_value(value)))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setData(0, Qt.ItemDataRole.UserRole, path)
@@ -114,6 +119,7 @@ class ConfigurationDialog(QDialog):
         item.setToolTip(1, tooltip)
 
     def _validated_from_tree(self) -> AppConfig:
+        # Apply edited leaves to a copy before running full typed profile validation.
         raw = copy.deepcopy(self._config.to_dict())
         iterator = QTreeWidgetItemIterator(self.tree)
         while True:
@@ -129,6 +135,7 @@ class ConfigurationDialog(QDialog):
         return config_from_dict(raw)
 
     def _validate_and_accept(self) -> None:
+        # Save applies only a completely valid profile to the parent GUI.
         try:
             self.validated_config = self._validated_from_tree()
         except Exception as exc:
@@ -137,6 +144,7 @@ class ConfigurationDialog(QDialog):
         self.accept()
 
     def _load_file(self) -> None:
+        # Loading replaces displayed values but does not apply them until Save.
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Load configuration",
@@ -153,6 +161,7 @@ class ConfigurationDialog(QDialog):
         self._rebuild_tree()
 
     def _save_file(self) -> None:
+        # Validate before asking where to write so invalid profiles never reach disk.
         try:
             config = self._validated_from_tree()
         except Exception as exc:
@@ -183,6 +192,7 @@ class ConfigurationDialog(QDialog):
     def _parse_value(text: str, original: object, field: str) -> object:
         stripped = text.strip()
         try:
+            # Parse with the original leaf type while allowing null/list JSON transitions.
             if original is None or isinstance(original, (bool, list, tuple)):
                 return json.loads(stripped)
             if isinstance(original, int):
@@ -195,6 +205,7 @@ class ConfigurationDialog(QDialog):
 
     @staticmethod
     def _set_path(raw: dict[str, Any], path: tuple[PathPart, ...], value: object) -> None:
+        # Walk the stored key path to replace exactly one nested profile leaf.
         current: Any = raw
         for part in path[:-1]:
             current = current[part]
@@ -202,6 +213,7 @@ class ConfigurationDialog(QDialog):
 
     @staticmethod
     def _tooltip(path: tuple[PathPart, ...]) -> str:
+        # Known leaves receive operator guidance and uncommon fields get a safe fallback.
         dotted = ".".join(map(str, path))
         leaf = str(path[-1])
         descriptions = {

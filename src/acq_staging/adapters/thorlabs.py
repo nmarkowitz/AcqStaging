@@ -69,7 +69,6 @@ class KinesisFacade:
         return float(self.Decimal.ToDouble(value))
 
     def callback(self, function: Any) -> Any:
-        #self.load()
         return self.Action[self.UInt64](function)
 
     def settle(self) -> None:
@@ -137,12 +136,6 @@ class ThorlabsBSC101Stage:
                 raise AdapterError("rotation: Kinesis actuator is not defined")
             if not bool(channel.IsMotorSettingsValid):
                 raise AdapterError("rotation: Kinesis motor settings are invalid")
-            # channel.SetVelocityParams(
-            #     #self.facade.decimal(self.config.motion.velocity),
-            #     #self.facade.decimal(self.config.motion.acceleration),
-            #     self.config.motion.velocity,
-            #     self.config.motion.acceleration
-            # )
             self._controller = controller
             self._channel = channel
             self._motor_configuration = motor_configuration
@@ -199,7 +192,6 @@ class ThorlabsBSC101Stage:
                 bool(status.IsHomed),
                 bool(status.IsInMotion),
                 self.facade.dec2float(self._channel.Position),
-                #self._channel.Position,
                 self._error,
             )
         except Exception as exc:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Commented Code"
+  short_description: "Document every logical code block clearly"
+  default_prompt: "Use $write-commented-code to implement this change with concise block-level comments."

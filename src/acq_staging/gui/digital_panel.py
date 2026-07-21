@@ -33,6 +33,7 @@ class DigitalPanel(QGroupBox):
         self.status_label = QLabel("Disconnected")
         self.pin_boxes: dict[int, QCheckBox] = {}
 
+        # Buttons emit intent only; DAQ work runs through the main-window worker path.
         connect = QPushButton("Connect")
         disconnect = QPushButton("Disconnect")
         refresh = QPushButton("Read Pins")
@@ -68,6 +69,7 @@ class DigitalPanel(QGroupBox):
         if status.error:
             text = f"Error: {status.error}"
         self.status_label.setText(text)
+        # Output checkboxes retain desired values while labels show observed state.
         for line, box in self.pin_boxes.items():
             if line not in self.config.selected_lines:
                 box.setText(f"Line {line}: NOT CONFIGURED")
@@ -84,6 +86,7 @@ class DigitalPanel(QGroupBox):
         }
 
     def _rebuild_pins(self) -> None:
+        # Always render eight slots so unused channels remain visible but disabled.
         while self.pin_layout.count():
             item = self.pin_layout.takeAt(0)
             if item is not None:

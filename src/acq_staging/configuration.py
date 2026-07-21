@@ -209,6 +209,7 @@ class DigitalIOConfig:
 
     def validate(self, direction: DigitalDirection) -> None:
         field = f"digital_io.{direction.value}"
+        # Hardware profiles need an NI device name; simulations may use a label.
         if self.adapter is DigitalAdapterType.NIDAQMX and not self.device.strip():
             raise ConfigurationError(f"{field}.device: required for NI-DAQ hardware")
         port = self.normalized_port
@@ -216,6 +217,7 @@ class DigitalIOConfig:
             raise ConfigurationError(f"{field}.port: expected P0 or port0 notation")
         if self.line_count <= 0 or self.line_count > 8:
             raise ConfigurationError(f"{field}.line_count: must be between 1 and 8")
+        # A null line list selects the whole declared port width.
         if self.lines is not None:
             if not self.lines:
                 raise ConfigurationError(f"{field}.lines: use null for the whole port")
@@ -321,6 +323,7 @@ def _parse_component(raw: object, field: str) -> ComponentConfig:
 
 
 def _parse_digital_line(value: object, field: str) -> int:
+    # Accept both compact integers and NI-style strings such as line2.
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     if isinstance(value, str) and value.strip().lower().startswith("line"):
@@ -333,6 +336,7 @@ def _parse_digital_line(value: object, field: str) -> int:
 def _parse_digital(raw: object, field: str) -> DigitalIOConfig:
     data = dict(_mapping(raw, field))
     try:
+        # Normalize external JSON values before constructing the typed record.
         data["adapter"] = DigitalAdapterType(data["adapter"])
         if data.get("lines") is not None:
             if not isinstance(data["lines"], (list, tuple)):

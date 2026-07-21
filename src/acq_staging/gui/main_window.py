@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
             panels_layout.addWidget(panel, index // 2, index % 2)
         root_layout.addLayout(panels_layout)
 
+        # DAQ panels use their own vendor-neutral service beside the motion panels.
         digital_layout = QHBoxLayout()
         self.digital_panels: dict[DigitalDirection, DigitalPanel] = {}
         for direction in DigitalDirection:
@@ -181,6 +182,7 @@ class MainWindow(QMainWindow):
         panel.motion_test_requested.connect(self.request_motion_test)
 
     def _connect_digital_panel(self, panel: DigitalPanel) -> None:
+        # Route every DAQ request through workers to keep NI calls off the GUI thread.
         panel.connect_requested.connect(
             lambda direction: self._run(
                 f"Connect {direction.value}",
@@ -206,6 +208,7 @@ class MainWindow(QMainWindow):
         _direction: DigitalDirection,
         states: object,
     ) -> None:
+        # Reject malformed signal payloads before they reach the digital service.
         if not isinstance(states, dict):
             self._show_error("invalid digital output state request")
             return
@@ -215,6 +218,7 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_all(self) -> None:
+        # Roll back both subsystems if any enabled component fails to connect.
         self.service.connect_all()
         connected: list[DigitalDirection] = []
         try:
@@ -306,6 +310,7 @@ class MainWindow(QMainWindow):
         )
 
     def _confirm_mosaic(self, readiness: object) -> None:
+        # Block unhomed axes and require acknowledgement for disconnected axes.
         if not isinstance(readiness, tuple) or len(readiness) != 2:
             self._show_error("invalid mosaic readiness result")
             return
@@ -337,6 +342,7 @@ class MainWindow(QMainWindow):
     def _run_mosaic(self, allowed_disconnected: frozenset[AxisName]) -> None:
         worker: FunctionWorker
 
+        # Require an audit file before any automated hardware sequence can begin.
         if self._mosaic_logger is not None:
             self._show_error("a mosaic is already running")
             return
@@ -350,6 +356,7 @@ class MainWindow(QMainWindow):
         self.digital_service.set_event_callback(logger.log)
         self._append_log(f"Mosaic audit log: {logger.path}")
 
+        # Replace any completed visualization with a fresh pending-tile grid.
         if self._mosaic_progress_dialog is not None:
             self._mosaic_progress_dialog.close()
         dialog = MosaicProgressDialog(self.config.mosaic, self)
@@ -359,6 +366,7 @@ class MainWindow(QMainWindow):
         dialog.show()
 
         def execute() -> list[MosaicTile]:
+            # Audit callbacks run synchronously in this worker for precise ordering.
             return self.service.run_mosaic(
                 worker.signals.progress.emit,
                 allowed_disconnected,
@@ -373,6 +381,7 @@ class MainWindow(QMainWindow):
         self.thread_pool.start(worker)
 
     def _show_mosaic_progress(self, progress: object) -> None:
+        # Ignore unrelated worker payloads before updating mosaic widgets.
         if not isinstance(progress, MosaicProgress):
             return
         if self._mosaic_progress_dialog is not None:
@@ -396,6 +405,7 @@ class MainWindow(QMainWindow):
         self._finish_mosaic_audit()
 
     def _finish_mosaic_audit(self) -> None:
+        # Detach DAQ callbacks before closing the stream they may write to.
         if self._mosaic_audit_digital_service is not None:
             self._mosaic_audit_digital_service.set_event_callback(None)
             self._mosaic_audit_digital_service = None
@@ -408,6 +418,7 @@ class MainWindow(QMainWindow):
             self._mosaic_progress_dialog = None
 
     def edit_configuration(self) -> None:
+        # The dialog owns file validation; this method applies only accepted profiles.
         dialog = ConfigurationDialog(self.config, self)
         if dialog.exec() and dialog.validated_config is not None:
             try:
@@ -492,6 +503,7 @@ class MainWindow(QMainWindow):
         self._poll_pending = False
 
     def _poll_components(self) -> Pose:
+        # Refresh motion, inputs, and applied outputs in one background operation.
         pose = self.service.refresh_pose()
         self.digital_service.refresh_connected_io()
         return pose

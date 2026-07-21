@@ -35,6 +35,7 @@ class MosaicProgressDialog(QDialog):
         self.status_label.setObjectName("mosaic_progress_status")
         self.tiles: dict[tuple[int, int, int], QLabel] = {}
 
+        # A fixed legend makes tile state readable without relying on status text.
         legend = QHBoxLayout()
         legend.addWidget(QLabel("Legend:"))
         legend.addWidget(self._legend_item("Pending", PENDING_COLOR))
@@ -44,6 +45,7 @@ class MosaicProgressDialog(QDialog):
 
         content = QWidget()
         planes = QVBoxLayout(content)
+        # Each Z plane receives a separate XY grid using serpentine traversal numbers.
         order = self._tile_order(config)
         for z_index in range(config.tiles_z):
             group = QGroupBox(f"Z plane {z_index + 1} of {config.tiles_z}")
@@ -84,6 +86,7 @@ class MosaicProgressDialog(QDialog):
         tile = self.tiles.get(key)
         if tile is None:
             return
+        # Current events turn orange; completion events permanently turn green.
         color = (
             CURRENT_COLOR
             if progress.phase is MosaicTilePhase.CURRENT
@@ -103,6 +106,7 @@ class MosaicProgressDialog(QDialog):
 
     @staticmethod
     def _tile_order(config: MosaicConfig) -> dict[tuple[int, int, int], int]:
+        # Match service traversal so displayed numbers reproduce the execution order.
         order: dict[tuple[int, int, int], int] = {}
         number = 1
         for z_index in range(config.tiles_z):
@@ -125,6 +129,7 @@ class MosaicProgressDialog(QDialog):
 
     @staticmethod
     def _set_color(tile: QLabel, color: str) -> None:
+        # Store the semantic color as a property for tests and future accessibility work.
         tile.setProperty("tile_color", color)
         tile.setStyleSheet(
             f"background-color: {color}; border: 1px solid #555; font-weight: bold;"

@@ -79,6 +79,7 @@ def build_digital_devices(
     allow_hardware: bool = False,
 ) -> dict[DigitalDirection, DigitalIODevice]:
     """Build both configured digital components with explicit hardware authority."""
+    # Keep NI object construction behind the same explicit hardware authority gate.
     devices: dict[DigitalDirection, DigitalIODevice] = {}
     for direction in DigitalDirection:
         component = config.digital_io[direction]

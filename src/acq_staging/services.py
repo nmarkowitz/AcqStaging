@@ -165,6 +165,7 @@ class MotionService:
 
     def mosaic_readiness(self) -> tuple[tuple[AxisName, ...], tuple[AxisName, ...]]:
         """Return disconnected and connected-but-unhomed mosaic axes."""
+        # Separate promptable disconnections from unsafe connected-but-unhomed axes.
         disconnected: list[AxisName] = []
         unhomed: list[AxisName] = []
         for axis in (AxisName.X, AxisName.Y, AxisName.Z):
@@ -180,6 +181,7 @@ class MotionService:
         allowed_disconnected: frozenset[AxisName] = frozenset(),
     ) -> list[MosaicTile]:
         """Plan every tile from the current XYZ position without moving hardware."""
+        # Snapshot connected origins before generating any absolute tile destination.
         origins: dict[AxisName, float] = {}
         for axis in (AxisName.X, AxisName.Y, AxisName.Z):
             status = self._axis(axis).status()
@@ -219,6 +221,7 @@ class MotionService:
                         (AxisName.Y, tile.y_mm),
                         (AxisName.Z, tile.z_mm),
                     ):
+                        # Reject the entire path before the first vendor movement command.
                         if not self.config.components[axis].limits.contains(destination):
                             raise MotionSafetyError(
                                 f"mosaic tile ({x_index}, {y_index}, {z_index}) places "
@@ -234,6 +237,7 @@ class MotionService:
         on_event: Callable[[str, dict[str, object]], None] | None = None,
     ) -> list[MosaicTile]:
         """Execute a preflighted XYZ serpentine mosaic until complete or stopped."""
+        # A nonblocking lock prevents overlapping automated traversals.
         if not self._mosaic_lock.acquire(blocking=False):
             raise MotionSafetyError("a mosaic is already running")
         self._mosaic_stop.clear()
@@ -253,6 +257,7 @@ class MotionService:
                     },
                 )
             for number, tile in enumerate(tiles, start=1):
+                # Emit audit and GUI events around the exact work for each tile.
                 self._require_mosaic_running()
                 tile_details: dict[str, object] = {
                     "tile": number,
@@ -305,6 +310,7 @@ class MotionService:
                 on_event("MOSAIC_COMPLETE", {"total_tiles": len(tiles)})
             return tiles
         except Exception as exc:
+            # Preserve the original error while logging it and safely stopping all axes.
             if on_event is not None:
                 with suppress(Exception):
                     on_event("MOSAIC_FAILED", {"error": str(exc)})
@@ -319,6 +325,7 @@ class MotionService:
 
     def stop_mosaic(self) -> None:
         """Cancel mosaic waits and request a stop from each participating axis."""
+        # Wake interruptible waits before requesting vendor stops from every scan axis.
         self._mosaic_stop.set()
         for axis in (AxisName.X, AxisName.Y, AxisName.Z):
             self.stop(axis)
@@ -331,6 +338,7 @@ class MotionService:
         tile_number: int,
         on_event: Callable[[str, dict[str, object]], None] | None,
     ) -> None:
+        # Recheck connection and homing immediately before every possible move.
         self._require_mosaic_running()
         status = self._axis(axis).status()
         if not status.connected:
@@ -384,6 +392,7 @@ class MotionService:
             )
 
     def _interruptible_wait(self, duration_s: float) -> None:
+        # Bound settling and dwell waits by both Stop and the whole-mosaic deadline.
         self._require_mosaic_running()
         deadline = self._mosaic_deadline
         remaining = duration_s
@@ -439,6 +448,7 @@ class DigitalIOService:
         self._event_callback = callback
 
     def connect(self, direction: DigitalDirection) -> None:
+        # Confirm a new input task can read once or clean it up as a failed connection.
         device = self.devices[direction]
         device.connect()
         try:
@@ -462,6 +472,7 @@ class DigitalIOService:
         return self.devices[DigitalDirection.INPUT].read_states()
 
     def write_outputs(self, states: dict[int, bool], source: str = "explicit") -> None:
+        # Audit only successful writes so the log reflects actual completed DAQ calls.
         self.devices[DigitalDirection.OUTPUT].write_states(states)
         if self._event_callback is not None:
             self._event_callback(
@@ -474,6 +485,7 @@ class DigitalIOService:
 
     def refresh_connected_io(self) -> dict[int, bool | None] | None:
         """Poll inputs and reassert the last explicitly applied output levels."""
+        # Unknown outputs have never been applied and must not be written automatically.
         inputs = None
         if self.status(DigitalDirection.INPUT).connected:
             inputs = self.read_inputs()

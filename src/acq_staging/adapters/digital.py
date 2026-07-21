@@ -28,6 +28,7 @@ class SimulatedDigitalIODevice:
     """In-process digital port with deterministic low initial states."""
 
     def __init__(self, direction: DigitalDirection, config: DigitalIOConfig) -> None:
+        # Inputs begin low, while outputs remain unknown until the first explicit write.
         self.direction = direction
         self.config = config
         self._connected = False
@@ -58,6 +59,7 @@ class SimulatedDigitalIODevice:
             return dict(self._states)
 
     def write_states(self, states: dict[int, bool]) -> None:
+        # Require one atomic value for every selected output pin.
         self._require_connected()
         if self.direction is not DigitalDirection.OUTPUT:
             raise MotionSafetyError("digital input pins are read-only")
@@ -67,6 +69,7 @@ class SimulatedDigitalIODevice:
 
     def set_simulated_inputs(self, states: dict[int, bool]) -> None:
         """Set simulated input levels for tests and future simulation tooling."""
+        # Input injection exists only for deterministic simulation and test scenarios.
         if self.direction is not DigitalDirection.INPUT:
             raise MotionSafetyError("only simulated inputs can be injected")
         self._validate_keys(states)
@@ -96,6 +99,7 @@ class NidaqmxFacade:
     def load(self) -> None:
         if self._loaded:
             return
+        # Import lazily so simulation and test collection do not require NI drivers.
         import nidaqmx
         from nidaqmx.constants import LineGrouping
 
@@ -126,6 +130,7 @@ class NidaqmxDigitalIODevice:
             if self._task is not None:
                 return
             self.facade.load()
+            # Task construction configures channels but intentionally writes no output level.
             task = self.facade.Task()
             try:
                 physical = f"{self.config.device}/{self.config.normalized_port}"
@@ -140,11 +145,13 @@ class NidaqmxDigitalIODevice:
                     else channels.add_do_chan
                 )
                 if self.config.lines is None:
+                    # Whole-port mode transfers one integer whose bits represent pin states.
                     add_channel(
                         physical,
                         line_grouping=self.facade.LineGrouping.CHAN_FOR_ALL_LINES,
                     )
                 else:
+                    # Selected-line mode creates ordered Boolean channels for chosen pins.
                     for line in self.config.selected_lines:
                         add_channel(
                             f"{physical}/line{line}",
@@ -153,11 +160,13 @@ class NidaqmxDigitalIODevice:
                 self._task = task
                 self._error = None
             except Exception:
+                # Close partially configured NI tasks before propagating setup failures.
                 task.close()
                 raise
 
     def disconnect(self) -> None:
         with self._lock:
+            # Forget cached levels because disconnected hardware state is unknowable.
             task, self._task = self._task, None
             self._states = dict.fromkeys(self.config.selected_lines)
             if task is not None:
@@ -170,6 +179,7 @@ class NidaqmxDigitalIODevice:
     def read_states(self) -> dict[int, bool | None]:
         if self.direction is not DigitalDirection.INPUT:
             return self.status().states
+        # Serialize reads with writes and disconnects that may use the same NI task.
         with self._lock:
             task = self._require_task()
             try:
@@ -186,6 +196,7 @@ class NidaqmxDigitalIODevice:
             raise MotionSafetyError("digital input pins are read-only")
         if set(states) != set(self.config.selected_lines):
             raise AdapterError("digital_out: states must cover every configured pin")
+        # Convert logical pin states to the representation required by the channel mode.
         with self._lock:
             task = self._require_task()
             data: int | bool | list[bool]
@@ -205,6 +216,7 @@ class NidaqmxDigitalIODevice:
     def _decode(self, raw: object) -> dict[int, bool | None]:
         lines = self.config.selected_lines
         if self.config.lines is None:
+            # Decode each whole-port bit into the corresponding displayed line.
             value = int(cast(Any, raw))
             return {line: bool(value & (1 << line)) for line in lines}
         values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
