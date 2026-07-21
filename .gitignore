@@ -1,0 +1,14 @@
+references/
+old_plan.md
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.test-tmp/
+logs/
+*.egg-info/
+build/
+dist/
+references/
+scripts/old

@@ -1,0 +1,101 @@
+{
+  "schema_version": 3,
+  "profile_name": "Default Simulation",
+  "connections": {},
+  "components": {
+    "x": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 300.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 30.0
+      },
+      "simulation_start": 0.0
+    },
+    "y": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 300.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 30.0
+      },
+      "simulation_start": 0.0
+    },
+    "z": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 100.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 30.0
+      },
+      "simulation_start": 0.0
+    },
+    "rotation": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 360.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 20.0,
+        "jog_increment": 5.0,
+        "test_distance": 5.0,
+        "position_tolerance": 0.05,
+        "operation_timeout_s": 60.0
+      },
+      "simulation_start": 0.0
+    }
+  },
+  "mosaic": {
+    "step_x_mm": 2.8,
+    "step_y_mm": 2.8,
+    "step_z_mm": 0.001,
+    "tiles_x": 7,
+    "tiles_y": 5,
+    "tiles_z": 1,
+    "settling_time_s": 2.0,
+    "dwell_time_s": 0.0,
+    "operation_timeout_s": 3600.0
+  },
+  "digital_io": {
+    "digital_in": {
+      "enabled": true,
+      "adapter": "simulated",
+      "device": "SimDAQ",
+      "port": "P0",
+      "line_count": 8,
+      "lines": null,
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    },
+    "digital_out": {
+      "enabled": true,
+      "adapter": "simulated",
+      "device": "SimDAQ",
+      "port": "P1",
+      "line_count": 8,
+      "lines": ["line0", "line1", "line2", "line3"],
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    }
+  },
+  "ui": {
+    "pose_poll_interval_ms": 250,
+    "large_linear_move_mm": 10.0,
+    "large_rotation_move_deg": 30.0
+  }
+}

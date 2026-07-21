@@ -1,0 +1,8 @@
+PyQt6==6.11.0
+pythonnet==3.1.0
+zaber-motion==9.3.2
+nidaqmx==1.5.0
+pytest==9.1.1
+pytest-qt==4.5.0
+ruff==0.15.22
+mypy==2.3.0

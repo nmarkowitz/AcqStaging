@@ -1,0 +1,231 @@
+"""Structured application configuration editor."""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+from typing import Any
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTreeWidgetItemIterator,
+    QVBoxLayout,
+    QWidget,
+)
+
+from acq_staging.configuration import AppConfig, config_from_dict, load_config, save_config
+from acq_staging.errors import ConfigurationError
+
+PathPart = str | int
+
+
+class ConfigurationDialog(QDialog):
+    """Edit, load, validate, apply, and save complete configuration profiles."""
+
+    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Configuration")
+        self.resize(900, 720)
+        self.validated_config: AppConfig | None = None
+        self._config = config
+
+        self.tree = QTreeWidget()
+        self.tree.setObjectName("configuration_tree")
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(("Configuration field", "Value"))
+        self.tree.setAlternatingRowColors(True)
+        header = self.tree.header()
+        if header is None:
+            raise RuntimeError("configuration tree header is unavailable")
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
+        load_button = QPushButton("Load File")
+        load_button.setObjectName("load_config_file")
+        save_file_button = QPushButton("Save File")
+        save_file_button.setObjectName("save_config_file")
+        save_button = QPushButton("Save")
+        save_button.setObjectName("apply_config")
+        cancel_button = QPushButton("Cancel")
+        load_button.clicked.connect(self._load_file)
+        save_file_button.clicked.connect(self._save_file)
+        save_button.clicked.connect(self._validate_and_accept)
+        cancel_button.clicked.connect(self.reject)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(load_button)
+        buttons.addWidget(save_file_button)
+        buttons.addStretch()
+        buttons.addWidget(save_button)
+        buttons.addWidget(cancel_button)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "Edit values directly. Hover over any field for its purpose and units. "
+                "Save applies the profile to the GUI; Save File writes a JSON profile."
+            )
+        )
+        layout.addWidget(self.tree)
+        layout.addLayout(buttons)
+        self._rebuild_tree()
+
+    def _rebuild_tree(self) -> None:
+        self.tree.clear()
+        raw = self._config.to_dict()
+        root = self.tree.invisibleRootItem()
+        if root is None:
+            raise RuntimeError("configuration tree root is unavailable")
+        for key, value in raw.items():
+            self._add_value(root, key, value, (key,))
+        self.tree.expandToDepth(1)
+
+    def _add_value(
+        self,
+        parent: QTreeWidgetItem,
+        name: str,
+        value: object,
+        path: tuple[PathPart, ...],
+    ) -> None:
+        tooltip = self._tooltip(path)
+        if isinstance(value, dict):
+            item = QTreeWidgetItem(parent, (name, ""))
+            item.setToolTip(0, tooltip)
+            item.setToolTip(1, tooltip)
+            for key, child in value.items():
+                self._add_value(item, str(key), child, (*path, str(key)))
+            return
+
+        item = QTreeWidgetItem(parent, (name, self._format_value(value)))
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setData(1, Qt.ItemDataRole.UserRole, value)
+        item.setToolTip(0, tooltip)
+        item.setToolTip(1, tooltip)
+
+    def _validated_from_tree(self) -> AppConfig:
+        raw = copy.deepcopy(self._config.to_dict())
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while True:
+            item = iterator.value()
+            if item is None:
+                break
+            path = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(path, tuple):
+                original = item.data(1, Qt.ItemDataRole.UserRole)
+                value = self._parse_value(item.text(1), original, ".".join(map(str, path)))
+                self._set_path(raw, path, value)
+            iterator += 1
+        return config_from_dict(raw)
+
+    def _validate_and_accept(self) -> None:
+        try:
+            self.validated_config = self._validated_from_tree()
+        except Exception as exc:
+            QMessageBox.critical(self, "Invalid configuration", str(exc))
+            return
+        self.accept()
+
+    def _load_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load configuration",
+            "",
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            self._config = load_config(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Invalid configuration", str(exc))
+            return
+        self._rebuild_tree()
+
+    def _save_file(self) -> None:
+        try:
+            config = self._validated_from_tree()
+        except Exception as exc:
+            QMessageBox.critical(self, "Invalid configuration", str(exc))
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save configuration",
+            "",
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            save_config(config, Path(path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Unable to save configuration", str(exc))
+            return
+        self._config = config
+
+    @staticmethod
+    def _format_value(value: object) -> str:
+        if value is None or isinstance(value, (bool, list, tuple)):
+            return json.dumps(value)
+        return str(value)
+
+    @staticmethod
+    def _parse_value(text: str, original: object, field: str) -> object:
+        stripped = text.strip()
+        try:
+            if original is None or isinstance(original, (bool, list, tuple)):
+                return json.loads(stripped)
+            if isinstance(original, int):
+                return int(stripped)
+            if isinstance(original, float):
+                return float(stripped)
+            return text
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ConfigurationError(f"{field}: invalid value {text!r}") from exc
+
+    @staticmethod
+    def _set_path(raw: dict[str, Any], path: tuple[PathPart, ...], value: object) -> None:
+        current: Any = raw
+        for part in path[:-1]:
+            current = current[part]
+        current[path[-1]] = value
+
+    @staticmethod
+    def _tooltip(path: tuple[PathPart, ...]) -> str:
+        dotted = ".".join(map(str, path))
+        leaf = str(path[-1])
+        descriptions = {
+            "schema_version": "Profile format version; must match the application schema.",
+            "profile_name": "Human-readable name shown in the main window title.",
+            "enabled": "Whether Connect All includes this component.",
+            "adapter": "Backend used for simulation or physical hardware communication.",
+            "minimum": "Lowest permitted software position in millimetres or degrees.",
+            "maximum": "Highest permitted software position in millimetres or degrees.",
+            "velocity": "Maximum commanded motion velocity in the component's configured units.",
+            "acceleration": "Maximum commanded motion acceleration in configured units.",
+            "jog_increment": "Distance or angle used by the GUI jog buttons.",
+            "test_distance": "Small displacement used by an acknowledged motion test.",
+            "position_tolerance": "Allowed position error in millimetres or degrees.",
+            "operation_timeout_s": "Maximum permitted operation duration in seconds.",
+            "port": "Serial port, or DAQ port in P0 or port0 notation.",
+            "baud_rate": "Serial communication speed in bits per second.",
+            "serial_number": "Vendor device serial number used for exact identity matching.",
+            "axis_number": "Vendor channel or axis number assigned to this component.",
+            "device": "NI-DAQmx device name, for example Dev1.",
+            "line_count": "Physical DAQ port width from 1 through 8.",
+            "lines": "DAQ pins to use, or null for the whole configured port.",
+            "polling_interval_ms": "Background state refresh interval in milliseconds.",
+            "settling_time_s": "Wait after reaching a mosaic tile, in seconds.",
+            "dwell_time_s": "Optional per-tile dwell duration in seconds.",
+        }
+        return descriptions.get(leaf, f"Configuration value for {dotted}.")

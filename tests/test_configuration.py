@@ -1,0 +1,97 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from acq_staging.configuration import (
+    config_from_dict,
+    default_simulation_config,
+    load_config,
+)
+from acq_staging.errors import ConfigurationError
+from acq_staging.models import AdapterType, AxisName, DigitalDirection
+
+
+def test_default_config_round_trip() -> None:
+    config = default_simulation_config()
+    assert config_from_dict(config.to_dict()) == config
+
+
+def test_rejects_missing_component() -> None:
+    data = default_simulation_config().to_dict()
+    del data["components"]["z"]
+    with pytest.raises(ConfigurationError, match="all required"):
+        config_from_dict(data)
+
+
+def test_rejects_invalid_limits() -> None:
+    data = default_simulation_config().to_dict()
+    data["components"]["x"]["limits"] = {"minimum": 10.0, "maximum": 2.0}
+    with pytest.raises(ConfigurationError, match="minimum"):
+        config_from_dict(data)
+
+
+def test_config_dictionary_is_json_serializable() -> None:
+    encoded = json.dumps(default_simulation_config().to_dict())
+    assert json.loads(encoded)["schema_version"] == 3
+
+
+def test_rejects_mosaic_step_outside_multi_tile_dimension() -> None:
+    data = default_simulation_config().to_dict()
+    data["mosaic"]["step_x_mm"] = 0.0
+
+    with pytest.raises(ConfigurationError, match="step_x_mm"):
+        config_from_dict(data)
+
+
+def test_hardware_example_keeps_bsc101_dll_path_in_profile() -> None:
+    config = load_config(Path("configs/hardware.example.json"))
+    rotation = config.components[AxisName.ROTATION]
+
+    assert rotation.adapter is AdapterType.THORLABS_BSC101
+    assert isinstance(rotation.serial_number, str)
+    assert rotation.serial_number
+    assert rotation.axis_number == 1
+    assert rotation.device_settings_name == "HDR50"
+    assert rotation.dll_directory == r"C:\Program Files\Thorlabs\Kinesis"
+    assert config.mosaic.operation_timeout_s == 3600.0
+
+
+def test_bsc101_requires_attached_stage_settings_name() -> None:
+    data = load_config(Path("configs/hardware.example.json")).to_dict()
+    data["components"]["rotation"]["device_settings_name"] = None
+
+    with pytest.raises(ConfigurationError, match="device_settings_name"):
+        config_from_dict(data)
+
+
+def test_rejects_nonpositive_mosaic_timeout() -> None:
+    data = default_simulation_config().to_dict()
+    data["mosaic"]["operation_timeout_s"] = 0.0
+
+    with pytest.raises(ConfigurationError, match="operation_timeout_s"):
+        config_from_dict(data)
+
+
+def test_digital_port_supports_whole_port_and_pin_subset() -> None:
+    config = load_config(Path("configs/simulation.json"))
+
+    assert config.digital_io[DigitalDirection.INPUT].selected_lines == tuple(range(8))
+    assert config.digital_io[DigitalDirection.INPUT].normalized_port == "port0"
+    assert config.digital_io[DigitalDirection.OUTPUT].selected_lines == (0, 1, 2, 3)
+
+
+def test_rejects_digital_pin_outside_port_width() -> None:
+    data = default_simulation_config().to_dict()
+    data["digital_io"]["digital_out"]["lines"] = [8]
+
+    with pytest.raises(ConfigurationError, match="outside configured port width"):
+        config_from_dict(data)
+
+
+def test_rejects_digital_ports_wider_than_eight_channels() -> None:
+    data = default_simulation_config().to_dict()
+    data["digital_io"]["digital_in"]["line_count"] = 9
+
+    with pytest.raises(ConfigurationError, match="between 1 and 8"):
+        config_from_dict(data)
