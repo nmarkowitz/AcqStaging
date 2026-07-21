@@ -6,7 +6,7 @@ from acq_staging.adapters.simulated import SimulatedMotionAxis
 from acq_staging.configuration import MosaicConfig, default_simulation_config
 from acq_staging.errors import MotionSafetyError
 from acq_staging.factory import build_simulation_axes
-from acq_staging.models import HOME_ORDER, AxisName
+from acq_staging.models import HOME_ORDER, AxisName, MosaicProgress, MosaicTilePhase
 from acq_staging.services import MotionService
 
 
@@ -68,7 +68,8 @@ def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
     service.connect_all()
     service.home_all()
 
-    tiles = service.run_mosaic()
+    progress: list[MosaicProgress] = []
+    tiles = service.run_mosaic(progress.append)
 
     assert [(tile.x_index, tile.y_index, tile.z_index) for tile in tiles] == [
         (0, 0, 0),
@@ -85,6 +86,9 @@ def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
         (0, 1, 1),
     ]
     assert service.pose.as_vector()[:3] == (0.0, 2.0, 3.0)
+    assert len(progress) == 2 * len(tiles)
+    assert progress[0].phase is MosaicTilePhase.CURRENT
+    assert progress[1].phase is MosaicTilePhase.COMPLETE
 
 
 def test_mosaic_preflight_rejects_entire_path_before_motion() -> None:

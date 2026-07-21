@@ -109,6 +109,9 @@ X -> Y -> Z -> Rotation
 
 - **Start Mosaic** asks for confirmation, uses the current XYZ position as the
   origin, preflights every tile, and runs the configured serpentine traversal.
+- Starting a mosaic opens a non-modal tiling window with one grid per Z plane.
+  Its legend shows gray Pending tiles, orange Current tiles, and green Complete
+  tiles while the scan progresses.
 - If an XYZ component is disconnected, Start Mosaic lists it and requires
   confirmation before running; acknowledged disconnected axes are skipped.
 - **Stop Mosaic** cancels mosaic waiting and requests a stop from X, Y, and Z.
@@ -342,7 +345,7 @@ python -m pytest -p no:cacheprovider
 The expected current result is:
 
 ```text
-43 passed, 1 deselected
+44 passed, 1 deselected
 ```
 
 The deselected item is the hardware safety placeholder. The default pytest
@@ -392,6 +395,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_services.py` | Home All, pose, motion tests, mosaic snake ordering, and path preflight. |
 | `test_gui.py` | Safe simulated startup, four panels, Identify, and explicit mosaic controls. |
 | `test_configuration_dialog.py` | Structured fields, tooltips, validation, and profile file actions. |
+| `test_mosaic_progress_dialog.py` | Multi-plane tile layout, legend, and progress colors. |
 | `test_diagnostics.py` | Non-motion diagnostics and the acknowledgement required for home or motion. |
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
 | `test_thorlabs_adapter.py` | BSC101 controller/channel lifecycle, exact actuator-settings validation, cleanup, and callback movement using fakes. |

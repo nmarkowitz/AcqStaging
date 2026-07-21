@@ -30,6 +30,7 @@ from acq_staging.factory import build_axes, build_digital_devices, build_simulat
 from acq_staging.gui.axis_panel import AxisPanel
 from acq_staging.gui.configuration_dialog import ConfigurationDialog
 from acq_staging.gui.digital_panel import DigitalPanel
+from acq_staging.gui.mosaic_progress_dialog import MosaicProgressDialog
 from acq_staging.gui.workers import FunctionWorker
 from acq_staging.models import (
     HOME_ORDER,
@@ -37,6 +38,7 @@ from acq_staging.models import (
     DiagnosticResult,
     DigitalAdapterType,
     DigitalDirection,
+    MosaicProgress,
     MosaicTile,
     Pose,
 )
@@ -62,6 +64,8 @@ class MainWindow(QMainWindow):
         self.thread_pool = thread_pool
         self._poll_pending = False
         self._workers: set[FunctionWorker] = set()
+        self._mosaic_progress_dialog: MosaicProgressDialog | None = None
+        self._mosaic_had_error = False
         self.setWindowTitle(f"AcqStaging — {self.config.profile_name}")
         self.resize(1050, 750)
 
@@ -330,6 +334,14 @@ class MainWindow(QMainWindow):
     def _run_mosaic(self, allowed_disconnected: frozenset[AxisName]) -> None:
         worker: FunctionWorker
 
+        if self._mosaic_progress_dialog is not None:
+            self._mosaic_progress_dialog.close()
+        dialog = MosaicProgressDialog(self.config.mosaic, self)
+        self._mosaic_progress_dialog = dialog
+        self._mosaic_had_error = False
+        dialog.destroyed.connect(lambda: self._clear_mosaic_dialog(dialog))
+        dialog.show()
+
         def execute() -> list[MosaicTile]:
             return self.service.run_mosaic(
                 worker.signals.progress.emit,
@@ -339,20 +351,35 @@ class MainWindow(QMainWindow):
         worker = FunctionWorker(execute)
         self._workers.add(worker)
         worker.signals.progress.connect(self._show_mosaic_progress)
-        worker.signals.failed.connect(self._show_error)
-        worker.signals.finished.connect(lambda: self._operation_finished(worker, "Mosaic"))
+        worker.signals.failed.connect(self._mosaic_failed)
+        worker.signals.finished.connect(lambda: self._mosaic_finished(worker))
         self.thread_pool.start(worker)
 
     def _show_mosaic_progress(self, progress: object) -> None:
-        if not isinstance(progress, tuple) or len(progress) != 3:
+        if not isinstance(progress, MosaicProgress):
             return
-        number, total, tile = progress
-        if not isinstance(tile, MosaicTile):
-            return
+        if self._mosaic_progress_dialog is not None:
+            self._mosaic_progress_dialog.update_progress(progress)
+        tile = progress.tile
         self.app_status_bar.showMessage(
-            f"Mosaic tile {number}/{total}: "
+            f"Mosaic tile {progress.number}/{progress.total}: "
             f"X={tile.x_mm:.4f}, Y={tile.y_mm:.4f}, Z={tile.z_mm:.4f} mm"
         )
+
+    def _mosaic_failed(self, message: str) -> None:
+        self._mosaic_had_error = True
+        if self._mosaic_progress_dialog is not None:
+            self._mosaic_progress_dialog.mark_failed(message)
+        self._show_error(message)
+
+    def _mosaic_finished(self, worker: FunctionWorker) -> None:
+        if not self._mosaic_had_error and self._mosaic_progress_dialog is not None:
+            self._mosaic_progress_dialog.mark_finished()
+        self._operation_finished(worker, "Mosaic")
+
+    def _clear_mosaic_dialog(self, dialog: MosaicProgressDialog) -> None:
+        if self._mosaic_progress_dialog is dialog:
+            self._mosaic_progress_dialog = None
 
     def edit_configuration(self) -> None:
         dialog = ConfigurationDialog(self.config, self)

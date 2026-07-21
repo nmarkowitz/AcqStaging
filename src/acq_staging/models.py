@@ -104,6 +104,23 @@ class MosaicTile:
     z_index: int
 
 
+class MosaicTilePhase(StrEnum):
+    """Lifecycle phase reported for a mosaic tile."""
+
+    CURRENT = "current"
+    COMPLETE = "complete"
+
+
+@dataclass(frozen=True, slots=True)
+class MosaicProgress:
+    """Worker-safe progress event for one mosaic tile."""
+
+    number: int
+    total: int
+    tile: MosaicTile
+    phase: MosaicTilePhase
+
+
 @dataclass(frozen=True, slots=True)
 class DigitalStatus:
     """Observed digital pin states for one configured component."""

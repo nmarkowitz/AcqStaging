@@ -19,7 +19,9 @@ from acq_staging.models import (
     DiagnosticResult,
     DigitalDirection,
     DigitalStatus,
+    MosaicProgress,
     MosaicTile,
+    MosaicTilePhase,
     Pose,
 )
 
@@ -227,7 +229,7 @@ class MotionService:
 
     def run_mosaic(
         self,
-        on_progress: Callable[[tuple[int, int, MosaicTile]], None] | None = None,
+        on_progress: Callable[[MosaicProgress], None] | None = None,
         allowed_disconnected: frozenset[AxisName] = frozenset(),
     ) -> list[MosaicTile]:
         """Execute a preflighted XYZ serpentine mosaic until complete or stopped."""
@@ -240,14 +242,20 @@ class MotionService:
             tiles = self.plan_mosaic(allowed_disconnected)
             for number, tile in enumerate(tiles, start=1):
                 self._require_mosaic_running()
+                if on_progress is not None:
+                    on_progress(
+                        MosaicProgress(number, len(tiles), tile, MosaicTilePhase.CURRENT)
+                    )
                 # Move one axis at a time and skip coordinates already within tolerance.
                 self._move_mosaic_axis(AxisName.Z, tile.z_mm, allowed_disconnected)
                 self._move_mosaic_axis(AxisName.Y, tile.y_mm, allowed_disconnected)
                 self._move_mosaic_axis(AxisName.X, tile.x_mm, allowed_disconnected)
                 self._interruptible_wait(self.config.mosaic.settling_time_s)
-                if on_progress is not None:
-                    on_progress((number, len(tiles), tile))
                 self._interruptible_wait(self.config.mosaic.dwell_time_s)
+                if on_progress is not None:
+                    on_progress(
+                        MosaicProgress(number, len(tiles), tile, MosaicTilePhase.COMPLETE)
+                    )
             return tiles
         except Exception:
             self._mosaic_stop.set()
