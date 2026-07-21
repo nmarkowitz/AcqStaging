@@ -42,6 +42,7 @@ from acq_staging.models import (
     MosaicTile,
     Pose,
 )
+from acq_staging.mosaic_logging import MosaicAuditLogger
 from acq_staging.services import DigitalIOService, MotionService
 
 
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
         self._workers: set[FunctionWorker] = set()
         self._mosaic_progress_dialog: MosaicProgressDialog | None = None
         self._mosaic_had_error = False
+        self._mosaic_logger: MosaicAuditLogger | None = None
+        self._mosaic_audit_digital_service: DigitalIOService | None = None
         self.setWindowTitle(f"AcqStaging — {self.config.profile_name}")
         self.resize(1050, 750)
 
@@ -334,6 +337,19 @@ class MainWindow(QMainWindow):
     def _run_mosaic(self, allowed_disconnected: frozenset[AxisName]) -> None:
         worker: FunctionWorker
 
+        if self._mosaic_logger is not None:
+            self._show_error("a mosaic is already running")
+            return
+        try:
+            logger = MosaicAuditLogger()
+        except Exception as exc:
+            self._show_error(f"Unable to create mosaic log: {exc}")
+            return
+        self._mosaic_logger = logger
+        self._mosaic_audit_digital_service = self.digital_service
+        self.digital_service.set_event_callback(logger.log)
+        self._append_log(f"Mosaic audit log: {logger.path}")
+
         if self._mosaic_progress_dialog is not None:
             self._mosaic_progress_dialog.close()
         dialog = MosaicProgressDialog(self.config.mosaic, self)
@@ -346,6 +362,7 @@ class MainWindow(QMainWindow):
             return self.service.run_mosaic(
                 worker.signals.progress.emit,
                 allowed_disconnected,
+                logger.log,
             )
 
         worker = FunctionWorker(execute)
@@ -376,6 +393,15 @@ class MainWindow(QMainWindow):
         if not self._mosaic_had_error and self._mosaic_progress_dialog is not None:
             self._mosaic_progress_dialog.mark_finished()
         self._operation_finished(worker, "Mosaic")
+        self._finish_mosaic_audit()
+
+    def _finish_mosaic_audit(self) -> None:
+        if self._mosaic_audit_digital_service is not None:
+            self._mosaic_audit_digital_service.set_event_callback(None)
+            self._mosaic_audit_digital_service = None
+        if self._mosaic_logger is not None:
+            self._mosaic_logger.close()
+            self._mosaic_logger = None
 
     def _clear_mosaic_dialog(self, dialog: MosaicProgressDialog) -> None:
         if self._mosaic_progress_dialog is dialog:
@@ -513,6 +539,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         # Shutdown requests safe stops before disconnecting and closing shared ports.
         self.poll_timer.stop()
+        if self._mosaic_logger is not None:
+            self._mosaic_logger.log("APPLICATION_SHUTDOWN", {})
+        self._finish_mosaic_audit()
         for axis in HOME_ORDER:
             with suppress(Exception):
                 self.service.stop(axis)

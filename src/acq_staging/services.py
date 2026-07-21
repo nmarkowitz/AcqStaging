@@ -231,6 +231,7 @@ class MotionService:
         self,
         on_progress: Callable[[MosaicProgress], None] | None = None,
         allowed_disconnected: frozenset[AxisName] = frozenset(),
+        on_event: Callable[[str, dict[str, object]], None] | None = None,
     ) -> list[MosaicTile]:
         """Execute a preflighted XYZ serpentine mosaic until complete or stopped."""
         if not self._mosaic_lock.acquire(blocking=False):
@@ -240,24 +241,73 @@ class MotionService:
         try:
             # Plan the complete path before the first command so limits fail safely.
             tiles = self.plan_mosaic(allowed_disconnected)
+            if on_event is not None:
+                on_event(
+                    "MOSAIC_START",
+                    {
+                        "total_tiles": len(tiles),
+                        "allowed_disconnected": sorted(
+                            axis.value for axis in allowed_disconnected
+                        ),
+                        "operation_timeout_s": self.config.mosaic.operation_timeout_s,
+                    },
+                )
             for number, tile in enumerate(tiles, start=1):
                 self._require_mosaic_running()
+                tile_details: dict[str, object] = {
+                    "tile": number,
+                    "total_tiles": len(tiles),
+                    "x_index": tile.x_index,
+                    "y_index": tile.y_index,
+                    "z_index": tile.z_index,
+                    "x_mm": tile.x_mm,
+                    "y_mm": tile.y_mm,
+                    "z_mm": tile.z_mm,
+                }
+                if on_event is not None:
+                    on_event("TILE_START", tile_details)
                 if on_progress is not None:
                     on_progress(
                         MosaicProgress(number, len(tiles), tile, MosaicTilePhase.CURRENT)
                     )
                 # Move one axis at a time and skip coordinates already within tolerance.
-                self._move_mosaic_axis(AxisName.Z, tile.z_mm, allowed_disconnected)
-                self._move_mosaic_axis(AxisName.Y, tile.y_mm, allowed_disconnected)
-                self._move_mosaic_axis(AxisName.X, tile.x_mm, allowed_disconnected)
+                self._move_mosaic_axis(
+                    AxisName.Z, tile.z_mm, allowed_disconnected, number, on_event
+                )
+                self._move_mosaic_axis(
+                    AxisName.Y, tile.y_mm, allowed_disconnected, number, on_event
+                )
+                self._move_mosaic_axis(
+                    AxisName.X, tile.x_mm, allowed_disconnected, number, on_event
+                )
+                if on_event is not None:
+                    on_event(
+                        "SETTLING_START",
+                        {"tile": number, "duration_s": self.config.mosaic.settling_time_s},
+                    )
                 self._interruptible_wait(self.config.mosaic.settling_time_s)
+                if on_event is not None:
+                    on_event("SETTLING_COMPLETE", {"tile": number})
+                    on_event(
+                        "DWELL_START",
+                        {"tile": number, "duration_s": self.config.mosaic.dwell_time_s},
+                    )
                 self._interruptible_wait(self.config.mosaic.dwell_time_s)
+                if on_event is not None:
+                    on_event("DWELL_COMPLETE", {"tile": number})
                 if on_progress is not None:
                     on_progress(
                         MosaicProgress(number, len(tiles), tile, MosaicTilePhase.COMPLETE)
                     )
+                if on_event is not None:
+                    on_event("TILE_COMPLETE", tile_details)
+            if on_event is not None:
+                on_event("MOSAIC_COMPLETE", {"total_tiles": len(tiles)})
             return tiles
-        except Exception:
+        except Exception as exc:
+            if on_event is not None:
+                with suppress(Exception):
+                    on_event("MOSAIC_FAILED", {"error": str(exc)})
             self._mosaic_stop.set()
             for axis in (AxisName.X, AxisName.Y, AxisName.Z):
                 with suppress(Exception):
@@ -278,19 +328,60 @@ class MotionService:
         axis: AxisName,
         destination: float,
         allowed_disconnected: frozenset[AxisName],
+        tile_number: int,
+        on_event: Callable[[str, dict[str, object]], None] | None,
     ) -> None:
         self._require_mosaic_running()
         status = self._axis(axis).status()
         if not status.connected:
             if axis in allowed_disconnected:
+                if on_event is not None:
+                    on_event(
+                        "AXIS_SKIPPED",
+                        {
+                            "tile": tile_number,
+                            "axis": axis.value,
+                            "reason": "acknowledged disconnected axis",
+                            "nominal_destination": destination,
+                        },
+                    )
                 return
             raise MotionSafetyError(f"{axis.value}: disconnected during mosaic")
         if not status.homed:
             raise MotionSafetyError(f"{axis.value}: must be homed during mosaic")
-        if abs(self._axis(axis).get_position() - destination) > self.config.components[
-            axis
-        ].motion.position_tolerance:
+        current = self._axis(axis).get_position()
+        if abs(current - destination) > self.config.components[axis].motion.position_tolerance:
+            if on_event is not None:
+                on_event(
+                    "MOVEMENT_START",
+                    {
+                        "tile": tile_number,
+                        "axis": axis.value,
+                        "start": current,
+                        "destination": destination,
+                    },
+                )
             self.move_absolute(axis, destination)
+            observed = self._axis(axis).get_position()
+            if on_event is not None:
+                on_event(
+                    "MOVEMENT_COMPLETE",
+                    {
+                        "tile": tile_number,
+                        "axis": axis.value,
+                        "destination": destination,
+                        "observed": observed,
+                    },
+                )
+        elif on_event is not None:
+            on_event(
+                "POSITION_REUSED",
+                {
+                    "tile": tile_number,
+                    "axis": axis.value,
+                    "position": current,
+                },
+            )
 
     def _interruptible_wait(self, duration_s: float) -> None:
         self._require_mosaic_running()
@@ -338,6 +429,14 @@ class DigitalIOService:
     ) -> None:
         self.config = config
         self.devices = devices
+        self._event_callback: Callable[[str, dict[str, object]], None] | None = None
+
+    def set_event_callback(
+        self,
+        callback: Callable[[str, dict[str, object]], None] | None,
+    ) -> None:
+        """Attach an audit callback while a mosaic run is active."""
+        self._event_callback = callback
 
     def connect(self, direction: DigitalDirection) -> None:
         device = self.devices[direction]
@@ -362,8 +461,16 @@ class DigitalIOService:
     def read_inputs(self) -> dict[int, bool | None]:
         return self.devices[DigitalDirection.INPUT].read_states()
 
-    def write_outputs(self, states: dict[int, bool]) -> None:
+    def write_outputs(self, states: dict[int, bool], source: str = "explicit") -> None:
         self.devices[DigitalDirection.OUTPUT].write_states(states)
+        if self._event_callback is not None:
+            self._event_callback(
+                "DIGITAL_OUTPUT_WRITE",
+                {
+                    "source": source,
+                    "states": {str(line): state for line, state in states.items()},
+                },
+            )
 
     def refresh_connected_io(self) -> dict[int, bool | None] | None:
         """Poll inputs and reassert the last explicitly applied output levels."""
@@ -373,5 +480,5 @@ class DigitalIOService:
         output = self.status(DigitalDirection.OUTPUT)
         if output.connected and all(state is not None for state in output.states.values()):
             states = {line: bool(state) for line, state in output.states.items()}
-            self.write_outputs(states)
+            self.write_outputs(states, source="continuous_reassertion")
         return inputs

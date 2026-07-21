@@ -122,6 +122,8 @@ def test_output_is_reasserted_only_after_first_explicit_write() -> None:
             DigitalDirection.OUTPUT: output_device,
         },
     )
+    events: list[tuple[str, dict[str, object]]] = []
+    service.set_event_callback(lambda event, data: events.append((event, data)))
     service.connect(DigitalDirection.OUTPUT)
 
     service.refresh_connected_io()
@@ -131,3 +133,7 @@ def test_output_is_reasserted_only_after_first_explicit_write() -> None:
     service.write_outputs(requested)
     service.refresh_connected_io()
     assert output_device.write_count == 2
+    assert [data["source"] for event, data in events if event == "DIGITAL_OUTPUT_WRITE"] == [
+        "explicit",
+        "continuous_reassertion",
+    ]

@@ -69,7 +69,11 @@ def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
     service.home_all()
 
     progress: list[MosaicProgress] = []
-    tiles = service.run_mosaic(progress.append)
+    events: list[tuple[str, dict[str, object]]] = []
+    tiles = service.run_mosaic(
+        progress.append,
+        on_event=lambda event, data: events.append((event, data)),
+    )
 
     assert [(tile.x_index, tile.y_index, tile.z_index) for tile in tiles] == [
         (0, 0, 0),
@@ -89,6 +93,11 @@ def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
     assert len(progress) == 2 * len(tiles)
     assert progress[0].phase is MosaicTilePhase.CURRENT
     assert progress[1].phase is MosaicTilePhase.COMPLETE
+    names = [event for event, _data in events]
+    assert names[0] == "MOSAIC_START"
+    assert "MOVEMENT_START" in names
+    assert "MOVEMENT_COMPLETE" in names
+    assert names[-1] == "MOSAIC_COMPLETE"
 
 
 def test_mosaic_preflight_rejects_entire_path_before_motion() -> None:

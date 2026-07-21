@@ -149,6 +149,8 @@ Hardware-marked tests are never run without an explicit user request.
 
 ## Current session
 
+- Added one dedicated `logs/mosaics/YYYY_MM_DD_HH-mm-ss.log` audit stream per
+  run with synchronous tile, movement, position, timing, failure, and DAQ-output events.
 - Added a non-modal mosaic tiling window with one grid per Z plane, a
   Pending/Current/Complete color legend, and worker-driven per-tile updates.
 - Replaced the raw JSON configuration editor and separate toolbar file actions
@@ -170,7 +172,7 @@ Hardware-marked tests are never run without an explicit user request.
   acknowledgement before those axes are skipped; connected axes remain homed-only.
 - Kept rotation fixed and excluded legacy vibratome, dual-Z, tilt, cutting,
   notification, and camera-acquisition behavior.
-- Normal verification: 44 passed, 1 hardware test deselected; Ruff and mypy
+- Normal verification: 45 passed, 1 hardware test deselected; Ruff and mypy
   pass. Tests remain simulation/fake-only. No hardware was accessed.
 - Reconciled the production adapters with the working standalone Zaber and
   BSC101/HDR50 scripts without copying their automatic motion sequences.

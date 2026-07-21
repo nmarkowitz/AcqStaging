@@ -345,7 +345,7 @@ python -m pytest -p no:cacheprovider
 The expected current result is:
 
 ```text
-44 passed, 1 deselected
+45 passed, 1 deselected
 ```
 
 The deselected item is the hardware safety placeholder. The default pytest
@@ -396,6 +396,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_gui.py` | Safe simulated startup, four panels, Identify, and explicit mosaic controls. |
 | `test_configuration_dialog.py` | Structured fields, tooltips, validation, and profile file actions. |
 | `test_mosaic_progress_dialog.py` | Multi-plane tile layout, legend, and progress colors. |
+| `test_mosaic_logging.py` | Timestamped mosaic filename and chronological event format. |
 | `test_diagnostics.py` | Non-motion diagnostics and the acknowledgement required for home or motion. |
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
 | `test_thorlabs_adapter.py` | BSC101 controller/channel lifecycle, exact actuator-settings validation, cleanup, and callback movement using fakes. |
@@ -540,6 +541,19 @@ The GUI writes rotating logs to:
 ```text
 logs/acq_staging.log
 ```
+
+Each mosaic also creates a dedicated audit log under:
+
+```text
+logs/mosaics/YYYY_MM_DD_HH-mm-ss.log
+```
+
+Every line contains a local ISO timestamp, event name, and compact JSON details.
+Events include mosaic start/failure/completion, tile indices and absolute XYZ
+targets, movement start and observed completion positions, reused positions,
+acknowledged disconnected-axis skips, settling and dwell boundaries, and tile
+completion. Successful Digital Out writes during the mosaic are included with
+their pin states and whether they were explicit or continuous reassertions.
 
 Common errors:
 
