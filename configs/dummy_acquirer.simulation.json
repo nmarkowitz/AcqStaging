@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "profile_name": "Dummy Acquirer Simulation",
+  "digital_io": {
+    "digital_in": {
+      "enabled": true,
+      "adapter": "simulated",
+      "device": "SimDAQ",
+      "port": "P2",
+      "line_count": 1,
+      "lines": [0],
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    },
+    "digital_out": {
+      "enabled": true,
+      "adapter": "simulated",
+      "device": "SimDAQ",
+      "port": "P3",
+      "line_count": 1,
+      "lines": [0],
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    }
+  },
+  "handshake": {
+    "ready_input_line": 0,
+    "complete_output_line": 0,
+    "acquisition_duration_s": 1.0,
+    "reset_timeout_s": 30.0,
+    "polling_interval_ms": 20
+  }
+}

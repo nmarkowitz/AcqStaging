@@ -5,8 +5,11 @@ import pytest
 
 from acq_staging.configuration import (
     config_from_dict,
+    default_dummy_acquirer_config,
     default_simulation_config,
+    dummy_acquirer_config_from_dict,
     load_config,
+    load_dummy_acquirer_config,
 )
 from acq_staging.errors import ConfigurationError
 from acq_staging.models import AdapterType, AxisName, DigitalDirection
@@ -33,7 +36,19 @@ def test_rejects_invalid_limits() -> None:
 
 def test_config_dictionary_is_json_serializable() -> None:
     encoded = json.dumps(default_simulation_config().to_dict())
-    assert json.loads(encoded)["schema_version"] == 3
+    assert json.loads(encoded)["schema_version"] == 4
+
+
+def test_schema_three_profile_migrates_with_handshake_disabled() -> None:
+    # Removing the new section reproduces a saved profile from the prior schema.
+    data = default_simulation_config().to_dict()
+    data["schema_version"] = 3
+    del data["acquisition_handshake"]
+
+    migrated = config_from_dict(data)
+
+    assert migrated.schema_version == 4
+    assert migrated.acquisition_handshake.enabled is False
 
 
 def test_rejects_mosaic_step_outside_multi_tile_dimension() -> None:
@@ -95,3 +110,20 @@ def test_rejects_digital_ports_wider_than_eight_channels() -> None:
 
     with pytest.raises(ConfigurationError, match="between 1 and 8"):
         config_from_dict(data)
+
+
+def test_enabled_handshake_requires_selected_lines() -> None:
+    # Enabling an unowned output line must fail before any DAQ is constructed.
+    data = default_simulation_config().to_dict()
+    data["acquisition_handshake"]["enabled"] = True
+    data["acquisition_handshake"]["ready_output_line"] = 7
+
+    with pytest.raises(ConfigurationError, match="not selected by digital_out"):
+        config_from_dict(data)
+
+
+def test_dummy_acquirer_profile_round_trip() -> None:
+    config = default_dummy_acquirer_config()
+
+    assert dummy_acquirer_config_from_dict(config.to_dict()) == config
+    assert load_dummy_acquirer_config("configs/dummy_acquirer.simulation.json") == config

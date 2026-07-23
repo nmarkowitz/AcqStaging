@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from acq_staging.adapters.digital import (
+    DigitalIODevice,
     NidaqmxDigitalIODevice,
     SimulatedDigitalIODevice,
 )
@@ -137,3 +138,30 @@ def test_output_is_reasserted_only_after_first_explicit_write() -> None:
         "explicit",
         "continuous_reassertion",
     ]
+
+
+def test_handshake_line_write_preserves_other_initialized_outputs() -> None:
+    config = default_simulation_config()
+    devices: dict[DigitalDirection, DigitalIODevice] = {
+        DigitalDirection.INPUT: SimulatedDigitalIODevice(
+            DigitalDirection.INPUT,
+            config.digital_io[DigitalDirection.INPUT],
+        ),
+        DigitalDirection.OUTPUT: SimulatedDigitalIODevice(
+            DigitalDirection.OUTPUT,
+            config.digital_io[DigitalDirection.OUTPUT],
+        ),
+    }
+    service = DigitalIOService(config, devices)
+    service.connect(DigitalDirection.INPUT)
+    service.connect(DigitalDirection.OUTPUT)
+    initial = {0: False, 1: True, 2: False, 3: True}
+    service.write_outputs(initial)
+
+    service.begin_handshake(0, 0)
+    service.write_output_line(0, True)
+    observed = service.status(DigitalDirection.OUTPUT).states
+    service.write_output_line(0, False)
+    service.end_handshake()
+
+    assert observed == {0: True, 1: True, 2: False, 3: True}

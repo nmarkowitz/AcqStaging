@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 acq-staging = "acq_staging.app:main"
 acq-staging-diagnostic = "acq_staging.diagnostics.cli:main"
+acq-staging-dummy-acquirer = "acq_staging.dummy_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

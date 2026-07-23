@@ -10,14 +10,17 @@
 - Track pose as `[x_mm, y_mm, z_mm, theta_deg]`.
 - Provide PyQt6 manual control, individual diagnostics and visual device
   identification, explicit homing, Home All in X → Y → Z → Rotation order,
-  and explicitly confirmed motion-only XYZ mosaic traversal.
+  explicitly confirmed XYZ mosaic traversal, and optional DAQ acquisition handshaking.
+- Provide a standalone dummy acquirer that receives movement Ready and returns
+  acquisition Done through configurable Digital In and Digital Out lines.
 - Default to simulation. Never connect, home, move, or run hardware tests automatically.
 - Keep vendor calls inside adapters and all potentially blocking work outside the GUI thread.
 - Do not implement vibratome or dual-Z behavior.
 
 ## Locked decisions
 
-- Camera acquisition remains deferred; motion-only mosaic traversal is in scope.
+- Camera and real data acquisition remain deferred; DAQ-coordinated mosaic traversal is in scope.
+- Acquisition signaling uses an idle-LOW latched Ready/Done handshake, not short pulses.
 - Widgets are authored directly in Python.
 - Zaber configuration supports shared or separate serial ports.
 - Settings are stored in versioned JSON application profiles, never vendor device memory.
@@ -78,6 +81,8 @@ Primary references: `references/ni-examples/digital_in` and
 | 8 | Documentation and final integration | Complete |
 | 9 | Motion-only XYZ mosaic tiling | Complete (simulation-verified) |
 | 10 | Digital input and output components | Complete (simulation/fake-verified) |
+| 11 | DAQ acquisition handshake and dummy acquirer | Complete (simulation/fake-verified) |
+| 12 | Per-run count or endpoint mosaic geometry | Complete (simulation-verified) |
 
 Every phase must pass:
 
@@ -147,8 +152,30 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Verify no vibratome, dual-Z, automatic motion, blocking GUI calls, or vendor leakage.
 - [x] Pass all normal quality checks.
 
+### Phase 12 — Per-run mosaic geometry
+
+- [x] Add a Start Mosaic setup dialog with tile-count and absolute-endpoint modes.
+- [x] Keep step overrides transient, infer endpoint direction, and require exact spacing.
+- [x] Preserve full-path preflight, serpentine traversal, DAQ coordination, and Stop.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Added transient per-run mosaic geometry with tile-count mode starting at the
+  observed XYZ pose and endpoint mode using inclusive absolute begin/end positions.
+- Added editable per-run XYZ steps, inferred positive or negative axis direction,
+  exact endpoint-spacing validation, derived grid previews, and unchanged schema-4 profiles.
+- Normal verification: 65 passed, 1 hardware test deselected; Ruff and mypy
+  pass. Tests remain simulation/fake-only. No hardware was accessed.
+- Added schema-version-4 optional acquisition handshake settings with automatic
+  in-memory migration of schema-version-3 application profiles.
+- Added a preflighted, idle-LOW Ready/Done mosaic handshake that replaces dwell
+  when enabled, remains Stop-aware, preserves other output states, and fails on stale signals.
+- Added the standalone `acq-staging-dummy-acquirer` GUI with independent DAQ
+  configuration, timed or manual completion, counters, logging, and safe cleanup.
+- Added separate simulated and placeholder hardware dummy-acquirer profiles.
+- Normal verification: 56 passed, 1 hardware test deselected; Ruff and mypy
+  pass. Acquisition tests use simulations only. No hardware was accessed.
 - Added one dedicated `logs/mosaics/YYYY_MM_DD_HH-mm-ss.log` audit stream per
   run with synchronous tile, movement, position, timing, failure, and DAQ-output events.
 - Added a non-modal mosaic tiling window with one grid per Z plane, a

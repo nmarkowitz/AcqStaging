@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from acq_staging.acquisition import DaqTileHandshake
 from acq_staging.adapters.zaber import ZaberConnectionManager
 from acq_staging.configuration import (
     AppConfig,
@@ -31,6 +32,7 @@ from acq_staging.gui.axis_panel import AxisPanel
 from acq_staging.gui.configuration_dialog import ConfigurationDialog
 from acq_staging.gui.digital_panel import DigitalPanel
 from acq_staging.gui.mosaic_progress_dialog import MosaicProgressDialog
+from acq_staging.gui.mosaic_setup_dialog import MosaicSetupDialog
 from acq_staging.gui.workers import FunctionWorker
 from acq_staging.models import (
     HOME_ORDER,
@@ -38,7 +40,9 @@ from acq_staging.models import (
     DiagnosticResult,
     DigitalAdapterType,
     DigitalDirection,
+    MosaicInputMode,
     MosaicProgress,
+    MosaicRunSpec,
     MosaicTile,
     Pose,
 )
@@ -53,10 +57,18 @@ class MainWindow(QMainWindow):
         super().__init__()
         # Startup accepts simulation profiles only and performs no automatic connection.
         self.config = config or default_simulation_config()
-        self.service = MotionService(self.config, build_simulation_axes(self.config))
         self.digital_service = DigitalIOService(
             self.config,
             build_digital_devices(self.config),
+        )
+        self.acquisition_handshake = DaqTileHandshake(
+            self.config.acquisition_handshake,
+            self.digital_service,
+        )
+        self.service = MotionService(
+            self.config,
+            build_simulation_axes(self.config),
+            self.acquisition_handshake,
         )
         self.connection_manager: ZaberConnectionManager | None = None
         thread_pool = QThreadPool.globalInstance()
@@ -323,23 +335,50 @@ class MainWindow(QMainWindow):
             self._show_error(f"Connected mosaic components must be homed: {names}")
             return
 
-        mosaic = self.config.mosaic
-        total = mosaic.tiles_x * mosaic.tiles_y * mosaic.tiles_z
-        extent_x = (mosaic.tiles_x - 1) * mosaic.step_x_mm
-        extent_y = (mosaic.tiles_y - 1) * mosaic.step_y_mm
-        extent_z = (mosaic.tiles_z - 1) * mosaic.step_z_mm
+        # A modal setup keeps run-specific geometry separate from the saved profile.
+        run_spec = self._get_mosaic_run_spec()
+        if run_spec is None:
+            return
+
         missing_text = ""
         if disconnected:
             names = ", ".join(axis.value.upper() for axis in disconnected)
             missing_text = f" Disconnected components will be skipped: {names}."
+        handshake_text = (
+            " Acquisition DAQ acknowledgement is required for every tile."
+            if self.config.acquisition_handshake.enabled
+            else " Acquisition handshaking is disabled; dwell timing will be used."
+        )
+        geometry_text = (
+            f"absolute beginning {run_spec.beginning} and end {run_spec.ending}"
+            if run_spec.input_mode is MosaicInputMode.ENDPOINTS
+            else "the current XYZ position"
+        )
         if self._confirm(
             "Confirm mosaic motion",
-            f"Run {total} XYZ tiles from the current position over extents "
-            f"[{extent_x}, {extent_y}, {extent_z}] mm?{missing_text}",
+            f"Run {run_spec.total_tiles} XYZ tiles from {geometry_text}, using steps "
+            f"{run_spec.steps} mm and signed extents {run_spec.extents_mm} mm?"
+            f"{missing_text}{handshake_text}",
         ):
-            self._run_mosaic(frozenset(disconnected))
+            self._run_mosaic(frozenset(disconnected), run_spec)
 
-    def _run_mosaic(self, allowed_disconnected: frozenset[AxisName]) -> None:
+    def _get_mosaic_run_spec(self) -> MosaicRunSpec | None:
+        """Show the per-run geometry editor and return its validated result."""
+        dialog = MosaicSetupDialog(
+            self.config.mosaic,
+            self.config.components,
+            self.service.pose,
+            self,
+        )
+        if not dialog.exec():
+            return None
+        return dialog.validated_spec
+
+    def _run_mosaic(
+        self,
+        allowed_disconnected: frozenset[AxisName],
+        run_spec: MosaicRunSpec,
+    ) -> None:
         worker: FunctionWorker
 
         # Require an audit file before any automated hardware sequence can begin.
@@ -354,12 +393,16 @@ class MainWindow(QMainWindow):
         self._mosaic_logger = logger
         self._mosaic_audit_digital_service = self.digital_service
         self.digital_service.set_event_callback(logger.log)
+        if self.config.acquisition_handshake.enabled:
+            # Prevent connection or state changes while the mosaic owns both signal lines.
+            for panel in self.digital_panels.values():
+                panel.setEnabled(False)
         self._append_log(f"Mosaic audit log: {logger.path}")
 
         # Replace any completed visualization with a fresh pending-tile grid.
         if self._mosaic_progress_dialog is not None:
             self._mosaic_progress_dialog.close()
-        dialog = MosaicProgressDialog(self.config.mosaic, self)
+        dialog = MosaicProgressDialog(run_spec, self)
         self._mosaic_progress_dialog = dialog
         self._mosaic_had_error = False
         dialog.destroyed.connect(lambda: self._clear_mosaic_dialog(dialog))
@@ -371,6 +414,7 @@ class MainWindow(QMainWindow):
                 worker.signals.progress.emit,
                 allowed_disconnected,
                 logger.log,
+                run_spec=run_spec,
             )
 
         worker = FunctionWorker(execute)
@@ -412,6 +456,8 @@ class MainWindow(QMainWindow):
         if self._mosaic_logger is not None:
             self._mosaic_logger.close()
             self._mosaic_logger = None
+        for direction, panel in self.digital_panels.items():
+            panel.setEnabled(self.config.digital_io[direction].enabled)
 
     def _clear_mosaic_dialog(self, dialog: MosaicProgressDialog) -> None:
         if self._mosaic_progress_dialog is dialog:
@@ -420,7 +466,7 @@ class MainWindow(QMainWindow):
     def edit_configuration(self) -> None:
         # The dialog owns file validation; this method applies only accepted profiles.
         dialog = ConfigurationDialog(self.config, self)
-        if dialog.exec() and dialog.validated_config is not None:
+        if dialog.exec() and isinstance(dialog.validated_config, AppConfig):
             try:
                 self._apply_configuration(dialog.validated_config)
             except Exception as exc:
@@ -448,8 +494,12 @@ class MainWindow(QMainWindow):
         if self.connection_manager is not None:
             self.connection_manager.close_all()
         self.config = config
-        self.service = MotionService(config, axes)
         self.digital_service = DigitalIOService(config, digital_devices)
+        self.acquisition_handshake = DaqTileHandshake(
+            config.acquisition_handshake,
+            self.digital_service,
+        )
+        self.service = MotionService(config, axes, self.acquisition_handshake)
         self.connection_manager = manager
         for axis, panel in self.panels.items():
             panel.apply_config(config.components[axis])

@@ -8,10 +8,11 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Protocol
 
 from acq_staging.adapters.base import MotionAxis
 from acq_staging.adapters.digital import DigitalIODevice
-from acq_staging.configuration import AppConfig
+from acq_staging.configuration import AppConfig, DummyAcquirerConfig
 from acq_staging.errors import AdapterError, MotionSafetyError
 from acq_staging.models import (
     HOME_ORDER,
@@ -19,19 +20,48 @@ from acq_staging.models import (
     DiagnosticResult,
     DigitalDirection,
     DigitalStatus,
+    MosaicInputMode,
     MosaicProgress,
+    MosaicRunSpec,
     MosaicTile,
     MosaicTilePhase,
     Pose,
 )
 
 
+class TileAcquisitionHandshake(Protocol):
+    """Optional tile-level acquisition handshake used by mosaic orchestration."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def begin(self) -> None: ...
+
+    def acquire_tile(
+        self,
+        tile_number: int,
+        stop_event: threading.Event,
+        mosaic_deadline: float | None,
+        on_event: Callable[[str, dict[str, object]], None] | None,
+    ) -> None: ...
+
+    def abort(self) -> None: ...
+
+    def finish(self) -> None: ...
+
+
 class MotionService:
     """Coordinates components while enforcing application safety rules."""
 
-    def __init__(self, config: AppConfig, axes: dict[AxisName, MotionAxis]) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        axes: dict[AxisName, MotionAxis],
+        acquisition_handshake: TileAcquisitionHandshake | None = None,
+    ) -> None:
         self.config = config
         self.axes = axes
+        self.acquisition_handshake = acquisition_handshake
         self._pose = Pose.empty()
         self._mosaic_stop = threading.Event()
         self._mosaic_lock = threading.Lock()
@@ -174,44 +204,73 @@ class MotionService:
                 disconnected.append(axis)
             elif not status.homed:
                 unhomed.append(axis)
+            else:
+                # Refresh setup-dialog defaults without moving any connected stage.
+                self.refresh_position(axis)
         return tuple(disconnected), tuple(unhomed)
+
+    def default_mosaic_run_spec(self) -> MosaicRunSpec:
+        """Build transient count geometry from the active profile defaults."""
+        config = self.config.mosaic
+        return MosaicRunSpec.from_tile_counts(
+            config.step_x_mm,
+            config.step_y_mm,
+            config.step_z_mm,
+            config.tiles_x,
+            config.tiles_y,
+            config.tiles_z,
+        )
 
     def plan_mosaic(
         self,
         allowed_disconnected: frozenset[AxisName] = frozenset(),
+        run_spec: MosaicRunSpec | None = None,
     ) -> list[MosaicTile]:
         """Plan every tile from the current XYZ position without moving hardware."""
-        # Snapshot connected origins before generating any absolute tile destination.
+        # Use profile counts only when callers do not supply transient run geometry.
+        spec = run_spec or self.default_mosaic_run_spec()
+
+        # Snapshot count-mode origins before generating any absolute tile destination.
         origins: dict[AxisName, float] = {}
-        for axis in (AxisName.X, AxisName.Y, AxisName.Z):
+        for axis_index, axis in enumerate((AxisName.X, AxisName.Y, AxisName.Z)):
             status = self._axis(axis).status()
             if not status.connected:
                 if axis not in allowed_disconnected:
                     raise MotionSafetyError(
                         f"mosaic requires acknowledgement for disconnected {axis.value}"
                     )
-                # Use the configured nominal start only to describe skipped-axis tiles.
-                origins[axis] = self.config.components[axis].simulation_start
+                # Use explicit endpoints or the nominal start to describe a skipped axis.
+                explicit_begin = spec.beginning[axis_index]
+                origins[axis] = (
+                    explicit_begin
+                    if explicit_begin is not None
+                    else self.config.components[axis].simulation_start
+                )
             else:
                 if not status.homed:
                     raise MotionSafetyError(
                         f"mosaic requires connected axis {axis.value} to be homed"
                     )
-                origins[axis] = self._axis(axis).get_position()
+                # Endpoint mode starts at its entered beginning instead of the current pose.
+                explicit_begin = spec.beginning[axis_index]
+                origins[axis] = (
+                    explicit_begin
+                    if explicit_begin is not None
+                    else self._axis(axis).get_position()
+                )
 
-        config = self.config.mosaic
         tiles: list[MosaicTile] = []
         # Alternate X direction by Y row while retaining absolute tile coordinates.
-        for z_index in range(config.tiles_z):
-            for y_index in range(config.tiles_y):
-                x_indices = range(config.tiles_x)
+        for z_index in range(spec.tiles_z):
+            for y_index in range(spec.tiles_y):
+                x_indices = range(spec.tiles_x)
                 if y_index % 2:
-                    x_indices = range(config.tiles_x - 1, -1, -1)
+                    x_indices = range(spec.tiles_x - 1, -1, -1)
                 for x_index in x_indices:
                     tile = MosaicTile(
-                        origins[AxisName.X] + x_index * config.step_x_mm,
-                        origins[AxisName.Y] + y_index * config.step_y_mm,
-                        origins[AxisName.Z] + z_index * config.step_z_mm,
+                        spec.coordinate(0, x_index, origins[AxisName.X]),
+                        spec.coordinate(1, y_index, origins[AxisName.Y]),
+                        spec.coordinate(2, z_index, origins[AxisName.Z]),
                         x_index,
                         y_index,
                         z_index,
@@ -235,6 +294,7 @@ class MotionService:
         on_progress: Callable[[MosaicProgress], None] | None = None,
         allowed_disconnected: frozenset[AxisName] = frozenset(),
         on_event: Callable[[str, dict[str, object]], None] | None = None,
+        run_spec: MosaicRunSpec | None = None,
     ) -> list[MosaicTile]:
         """Execute a preflighted XYZ serpentine mosaic until complete or stopped."""
         # A nonblocking lock prevents overlapping automated traversals.
@@ -242,9 +302,16 @@ class MotionService:
             raise MotionSafetyError("a mosaic is already running")
         self._mosaic_stop.clear()
         self._mosaic_deadline = time.monotonic() + self.config.mosaic.operation_timeout_s
+        handshake_started = False
         try:
             # Plan the complete path before the first command so limits fail safely.
-            tiles = self.plan_mosaic(allowed_disconnected)
+            spec = run_spec or self.default_mosaic_run_spec()
+            tiles = self.plan_mosaic(allowed_disconnected, spec)
+            handshake = self.acquisition_handshake
+            if handshake is not None and handshake.enabled:
+                # DAQ preflight occurs before the first movement command.
+                handshake.begin()
+                handshake_started = True
             if on_event is not None:
                 on_event(
                     "MOSAIC_START",
@@ -254,6 +321,20 @@ class MotionService:
                             axis.value for axis in allowed_disconnected
                         ),
                         "operation_timeout_s": self.config.mosaic.operation_timeout_s,
+                        "acquisition_handshake": handshake_started,
+                        "input_mode": spec.input_mode.value,
+                        "steps_mm": list(spec.steps),
+                        "tile_counts": list(spec.tile_counts),
+                        "beginning_mm": (
+                            list(spec.beginning)
+                            if spec.input_mode is MosaicInputMode.ENDPOINTS
+                            else [tiles[0].x_mm, tiles[0].y_mm, tiles[0].z_mm]
+                        ),
+                        "ending_mm": [
+                            spec.coordinate(0, spec.tiles_x - 1, tiles[0].x_mm),
+                            spec.coordinate(1, spec.tiles_y - 1, tiles[0].y_mm),
+                            spec.coordinate(2, spec.tiles_z - 1, tiles[0].z_mm),
+                        ],
                     },
                 )
             for number, tile in enumerate(tiles, start=1):
@@ -293,13 +374,32 @@ class MotionService:
                 self._interruptible_wait(self.config.mosaic.settling_time_s)
                 if on_event is not None:
                     on_event("SETTLING_COMPLETE", {"tile": number})
-                    on_event(
-                        "DWELL_START",
-                        {"tile": number, "duration_s": self.config.mosaic.dwell_time_s},
+                if handshake_started and handshake is not None:
+                    # Acquisition completion replaces the motion-only placeholder dwell.
+                    if on_progress is not None:
+                        on_progress(
+                            MosaicProgress(
+                                number,
+                                len(tiles),
+                                tile,
+                                MosaicTilePhase.ACQUIRING,
+                            )
+                        )
+                    handshake.acquire_tile(
+                        number,
+                        self._mosaic_stop,
+                        self._mosaic_deadline,
+                        on_event,
                     )
-                self._interruptible_wait(self.config.mosaic.dwell_time_s)
-                if on_event is not None:
-                    on_event("DWELL_COMPLETE", {"tile": number})
+                else:
+                    if on_event is not None:
+                        on_event(
+                            "DWELL_START",
+                            {"tile": number, "duration_s": self.config.mosaic.dwell_time_s},
+                        )
+                    self._interruptible_wait(self.config.mosaic.dwell_time_s)
+                    if on_event is not None:
+                        on_event("DWELL_COMPLETE", {"tile": number})
                 if on_progress is not None:
                     on_progress(
                         MosaicProgress(number, len(tiles), tile, MosaicTilePhase.COMPLETE)
@@ -320,6 +420,9 @@ class MotionService:
                     self.stop(axis)
             raise
         finally:
+            # Release DAQ ownership after success, preflight failure, timeout, or Stop.
+            if handshake_started and self.acquisition_handshake is not None:
+                self.acquisition_handshake.finish()
             self._mosaic_deadline = None
             self._mosaic_lock.release()
 
@@ -327,6 +430,9 @@ class MotionService:
         """Cancel mosaic waits and request a stop from each participating axis."""
         # Wake interruptible waits before requesting vendor stops from every scan axis.
         self._mosaic_stop.set()
+        if self.acquisition_handshake is not None:
+            with suppress(Exception):
+                self.acquisition_handshake.abort()
         for axis in (AxisName.X, AxisName.Y, AxisName.Z):
             self.stop(axis)
 
@@ -433,12 +539,14 @@ class DigitalIOService:
 
     def __init__(
         self,
-        config: AppConfig,
+        config: AppConfig | DummyAcquirerConfig,
         devices: dict[DigitalDirection, DigitalIODevice],
     ) -> None:
         self.config = config
         self.devices = devices
         self._event_callback: Callable[[str, dict[str, object]], None] | None = None
+        self._handshake_active = False
+        self._lock = threading.RLock()
 
     def set_event_callback(
         self,
@@ -473,15 +581,59 @@ class DigitalIOService:
 
     def write_outputs(self, states: dict[int, bool], source: str = "explicit") -> None:
         # Audit only successful writes so the log reflects actual completed DAQ calls.
-        self.devices[DigitalDirection.OUTPUT].write_states(states)
-        if self._event_callback is not None:
-            self._event_callback(
-                "DIGITAL_OUTPUT_WRITE",
-                {
-                    "source": source,
-                    "states": {str(line): state for line, state in states.items()},
-                },
-            )
+        with self._lock:
+            if self._handshake_active and source not in {"handshake", "cleanup"}:
+                raise MotionSafetyError("digital outputs are reserved by an active handshake")
+            self.devices[DigitalDirection.OUTPUT].write_states(states)
+            if self._event_callback is not None:
+                self._event_callback(
+                    "DIGITAL_OUTPUT_WRITE",
+                    {
+                        "source": source,
+                        "states": {str(line): state for line, state in states.items()},
+                    },
+                )
+
+    def begin_handshake(self, input_line: int, output_line: int) -> None:
+        """Reserve the output port after verifying both handshake lines are idle LOW."""
+        with self._lock:
+            if self._handshake_active:
+                raise MotionSafetyError("a DAQ handshake is already active")
+            # A fresh input read rejects disconnected or stale acquisition completion.
+            inputs = self.read_inputs()
+            output = self.status(DigitalDirection.OUTPUT)
+            if not output.connected:
+                raise MotionSafetyError("digital_out must be connected for acquisition")
+            if inputs.get(input_line) is not False:
+                raise MotionSafetyError(
+                    f"digital_in line{input_line} must be known and LOW before starting"
+                )
+            if output.states.get(output_line) is not False:
+                raise MotionSafetyError(
+                    f"digital_out line{output_line} must be initialized LOW before starting"
+                )
+            self._handshake_active = True
+
+    def end_handshake(self) -> None:
+        """Release exclusive output ownership after returning the signal LOW."""
+        with self._lock:
+            self._handshake_active = False
+
+    def write_output_line(self, line: int, state: bool, source: str = "handshake") -> None:
+        """Change one output line while preserving every other initialized state."""
+        with self._lock:
+            output = self.status(DigitalDirection.OUTPUT)
+            if not output.connected:
+                raise AdapterError("digital_out: not connected")
+            if line not in output.states:
+                raise AdapterError(f"digital_out: line{line} is not configured")
+            if any(value is None for value in output.states.values()):
+                raise MotionSafetyError(
+                    "all configured digital outputs must be initialized before handshaking"
+                )
+            states = {pin: bool(value) for pin, value in output.states.items()}
+            states[line] = state
+            self.write_outputs(states, source=source)
 
     def refresh_connected_io(self) -> dict[int, bool | None] | None:
         """Poll inputs and reassert the last explicitly applied output levels."""
@@ -490,7 +642,11 @@ class DigitalIOService:
         if self.status(DigitalDirection.INPUT).connected:
             inputs = self.read_inputs()
         output = self.status(DigitalDirection.OUTPUT)
-        if output.connected and all(state is not None for state in output.states.values()):
+        if (
+            output.connected
+            and not self._handshake_active
+            and all(state is not None for state in output.states.values())
+        ):
             states = {line: bool(state) for line, state in output.states.items()}
             self.write_outputs(states, source="continuous_reassertion")
         return inputs

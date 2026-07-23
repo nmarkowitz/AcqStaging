@@ -7,9 +7,10 @@ linear axes (X, Y, and one Z) and a rotation stage driven through channel 1 of
 a Thorlabs BSC101 benchtop stepper motor controller.
 Track the scan-head pose in the fixed order `[x_mm, y_mm, z_mm, theta_deg]`.
 
-The current scope is the motion-control foundation. Do not add a vibratome,
-dual-Z behavior, camera acquisition, mosaic scanning, or an automated scan
-workflow unless the project contract is explicitly changed by the user.
+The current scope includes motion control, XYZ mosaic traversal, and an optional
+DAQ handshake with a standalone dummy acquisition application. Do not add a
+vibratome, dual-Z behavior, camera control, or real data acquisition unless the
+project contract is explicitly changed by the user.
 
 Read `PLAN.md` before making changes. Treat its project contract and locked
 decisions as authoritative. Use `README.md` for current user-facing behavior and

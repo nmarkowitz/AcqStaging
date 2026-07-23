@@ -2,6 +2,7 @@ import pytest
 from PyQt6.QtWidgets import QApplication, QPushButton
 from pytestqt.qtbot import QtBot
 
+from acq_staging.gui.dummy_acquirer_window import DummyAcquirerWindow
 from acq_staging.gui.main_window import MainWindow
 from acq_staging.models import AxisName, DigitalDirection
 
@@ -63,16 +64,34 @@ def test_partial_mosaic_confirmation_lists_disconnected_axes(
     window = MainWindow()
     qtbot.addWidget(window)
     prompts: list[str] = []
-    allowed: list[frozenset[AxisName]] = []
+    runs: list[tuple[frozenset[AxisName], object]] = []
+    run_spec = window.service.default_mosaic_run_spec()
 
     def confirm(_title: str, text: str) -> bool:
         prompts.append(text)
         return True
 
     monkeypatch.setattr(window, "_confirm", confirm)
-    monkeypatch.setattr(window, "_run_mosaic", allowed.append)
+    monkeypatch.setattr(window, "_get_mosaic_run_spec", lambda: run_spec)
+    monkeypatch.setattr(
+        window,
+        "_run_mosaic",
+        lambda allowed, spec: runs.append((allowed, spec)),
+    )
 
     window._confirm_mosaic(((AxisName.Z,), ()))
 
     assert "Z" in prompts[0]
-    assert allowed == [frozenset({AxisName.Z})]
+    assert runs == [(frozenset({AxisName.Z}), run_spec)]
+
+
+def test_dummy_acquirer_window_starts_disconnected_with_explicit_controls(
+    qtbot: QtBot,
+) -> None:
+    window = DummyAcquirerWindow()
+    qtbot.addWidget(window)
+
+    assert "Dummy Acquirer Simulation" in window.windowTitle()
+    for name in ("start_listening", "stop_listening", "complete_now"):
+        assert window.findChild(QPushButton, name) is not None
+    assert set(window.digital_panels) == set(DigitalDirection)

@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "profile_name": "Default Simulation",
   "connections": {},
   "components": {
@@ -92,6 +92,14 @@
       "operation_timeout_s": 10.0,
       "polling_interval_ms": 250
     }
+  },
+  "acquisition_handshake": {
+    "enabled": false,
+    "ready_output_line": 0,
+    "complete_input_line": 0,
+    "acquisition_timeout_s": 300.0,
+    "reset_timeout_s": 30.0,
+    "polling_interval_ms": 20
   },
   "ui": {
     "pose_poll_interval_ms": 250,

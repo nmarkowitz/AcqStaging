@@ -16,8 +16,9 @@ The tracked scan-head pose is displayed as:
 [x_mm, y_mm, z_mm, theta_deg]
 ```
 
-The application provides manual motion and motion-only XYZ mosaic traversal. It
-does not yet control a camera or acquire images at mosaic tiles.
+The application provides manual motion, XYZ mosaic traversal, and an optional
+DAQ Ready/Done handshake with external acquisition software. It does not control
+a camera or acquire data itself; a standalone dummy acquirer is included for testing.
 
 ## Hardware safety
 
@@ -34,6 +35,8 @@ This software controls physical motion hardware.
 - Normal automated tests use simulations or vendor fakes, never physical hardware.
 - Connecting Digital Out never writes a default level; output changes require
   the explicit **Apply Pin States** action.
+- An enabled acquisition handshake refuses to start unless both DAQ signals are
+  connected, initialized, and idle LOW before the first movement.
 - Hardware tests and scripts must not be run without explicit authorization and a reviewed configuration.
 
 The real adapters have been tested with fake vendor objects, not laboratory
@@ -63,6 +66,7 @@ The editable installation creates these commands:
 ```text
 acq-staging
 acq-staging-diagnostic
+acq-staging-dummy-acquirer
 ```
 
 For real Thorlabs use, the Windows computer must also have Thorlabs Kinesis
@@ -89,6 +93,16 @@ python -m acq_staging.app
 The window starts with four simulated motion components and two simulated
 digital components. Nothing is connected or homed at startup.
 
+The independent dummy acquisition GUI starts with:
+
+```powershell
+acq-staging-dummy-acquirer
+```
+
+It also starts disconnected with simulated DAQs and never changes an output on startup.
+The two standalone simulation profiles do not share an electrical signal bus;
+end-to-end inter-process operation requires correctly wired NI-DAQ lines.
+
 ## GUI controls
 
 ### Global controls
@@ -107,14 +121,21 @@ digital components. Nothing is connected or homed at startup.
 X -> Y -> Z -> Rotation
 ```
 
-- **Start Mosaic** asks for confirmation, uses the current XYZ position as the
-  origin, preflights every tile, and runs the configured serpentine traversal.
+- **Start Mosaic** opens a per-run setup window. Choose tile counts from the
+  current XYZ position or inclusive absolute beginning/end points, then review
+  the resolved grid before confirming motion.
+- X/Y/Z steps are prefilled from the profile and may be changed for that run
+  without modifying the active or saved configuration.
+- Endpoint mode supports increasing or decreasing travel independently on each
+  axis and requires each endpoint span to be an exact multiple of its step.
 - Starting a mosaic opens a non-modal tiling window with one grid per Z plane.
   Its legend shows gray Pending tiles, orange Current tiles, and green Complete
   tiles while the scan progresses.
 - If an XYZ component is disconnected, Start Mosaic lists it and requires
   confirmation before running; acknowledged disconnected axes are skipped.
 - **Stop Mosaic** cancels mosaic waiting and requests a stop from X, Y, and Z.
+- With acquisition handshaking enabled, each settled tile is held orange while
+  movement waits for acquisition Done before marking the tile complete.
 
 The pose display shows the most recently observed `[x, y, z, theta]`.
 An em dash means that component's position is not currently known.
@@ -154,6 +175,34 @@ Hardware output states remain `UNKNOWN` until successfully set. After the first
 explicit Apply, the worker continuously reasserts the last applied output state
 at the configured polling interval. Merely connecting Digital Out never writes.
 
+### Acquisition handshake
+
+The movement application uses a latched idle-LOW protocol so software polling
+cannot miss a short edge:
+
+1. Movement reaches and settles at a tile, then holds Ready HIGH.
+2. Acquisition detects Ready HIGH, acquires data, and holds Done HIGH.
+3. Movement detects Done HIGH and returns Ready LOW.
+4. Acquisition detects Ready LOW and returns Done LOW.
+5. Movement verifies both lines are reset before advancing to the next tile.
+
+Before starting, connect both DAQ directions and use **Apply Pin States** to
+initialize every configured Digital Out pin, including Ready, LOW. Stale HIGH or
+UNKNOWN states fail preflight before the first movement. Manual output writes and
+continuous output reassertion are blocked while the handshake owns Digital Out.
+
+When `acquisition_handshake.enabled` is false, mosaics retain the existing
+motion-only `dwell_time_s` behavior. An enabled handshake replaces that dwell and
+cannot be bypassed through the GUI.
+
+### Dummy data acquirer
+
+The standalone dummy GUI reuses the Digital In and Digital Out panels. Connect
+both directions, initialize every configured output LOW, and click **Start
+Listening**. Each Ready request starts a configurable timed acquisition;
+**Complete Now** ends the current wait early. Done remains HIGH until movement
+returns Ready LOW. **Stop Listening** interrupts waits and returns Done LOW.
+
 ## Safe simulation walkthrough
 
 This is the recommended first exercise:
@@ -180,6 +229,8 @@ Included profiles:
 
 - `configs/simulation.json`: safe all-simulation example
 - `configs/hardware.example.json`: hardware template containing placeholders
+- `configs/dummy_acquirer.simulation.json`: safe standalone dummy profile
+- `configs/dummy_acquirer.hardware.example.json`: placeholder dummy NI-DAQ profile
 
 Do not use `hardware.example.json` unchanged.
 
@@ -187,16 +238,18 @@ The major configuration sections are:
 
 ### Top-level settings
 
-- `schema_version`: currently `3`
+- `schema_version`: currently `4`
 - `profile_name`: descriptive profile name
 - `connections`: reusable Zaber serial connections
 - `components`: X, Y, Z, and rotation definitions
 - `ui`: GUI polling and confirmation thresholds
-- `mosaic`: motion-only XYZ tile geometry and timing
+- `mosaic`: XYZ tile geometry and motion/acquisition timing
 - `digital_io`: Digital In and Digital Out device, port, pin, and timeout settings
+- `acquisition_handshake`: optional movement-side Ready/Done line and timeout settings
 
-Older profiles must be updated to schema version 3 and given both `mosaic` and
-`digital_io` sections before they can be loaded.
+Schema-version-3 application profiles load with acquisition handshaking disabled
+and save back as schema version 4. Older profiles still require the documented
+`mosaic` and `digital_io` sections.
 
 ### Digital I/O settings
 
@@ -217,26 +270,45 @@ ports use `CHAN_FOR_ALL_LINES` with an integer bitmask. Pin subsets use
 
 ### Mosaic settings
 
-The mosaic origin is the observed XYZ position when **Start Mosaic** is
-approved. Configure the same geometry used by the applicable part of the
-legacy program, converted from microns to millimetres:
+The profile stores defaults for the **Start Mosaic** setup window. Per-run edits
+do not change the active profile or a saved JSON file:
 
-- `step_x_mm`, `step_y_mm`, and `step_z_mm`: distance between tile positions
-- `tiles_x`, `tiles_y`, and `tiles_z`: number of positions in each dimension
+- `step_x_mm`, `step_y_mm`, and `step_z_mm`: default distance between tile positions
+- `tiles_x`, `tiles_y`, and `tiles_z`: default count-mode positions per dimension
 - `settling_time_s`: wait after reaching a tile before reporting it ready
 - `dwell_time_s`: optional motion-only placeholder wait at each tile
 - `operation_timeout_s`: maximum duration allowed for the entire mosaic
 
+In tile-count mode, the observed XYZ pose becomes the first tile and each span
+is `(tiles - 1) * step`. In endpoint mode, beginning and end coordinates are
+absolute millimetre positions and both are included. The application derives
+each axis direction from the entered points; a nonzero span must divide into a
+whole number of unchanged steps, while equal points produce one position.
+
 Traversal snakes across X, advances Y after each row, and repeats the XY grid
-for each Z plane. Rotation remains fixed. The scan span is `(tiles - 1) * step`
-in each dimension. Every XYZ axis must be connected and homed, and the entire
-absolute path must fit configured software limits before the first movement.
+for each Z plane. Rotation remains fixed. Every XYZ axis must be connected and
+homed, and the entire absolute path must fit configured software limits before
+the first movement.
 Connected participating axes must be homed. Disconnected axes may be skipped
 only after the GUI lists them and the operator explicitly confirms the partial
 mosaic; homing is never bypassed for a connected axis.
 
 The legacy tilt-mosaic, vibratome, dual-Z, cut, notification, and acquisition
-parameters are intentionally excluded from the current project contract.
+parameters are intentionally excluded. Only acquisition coordination signals are in scope.
+
+### Acquisition handshake settings
+
+- `enabled`: require DAQ acquisition acknowledgement for every tile
+- `ready_output_line`: movement Digital Out line connected to acquisition Ready input
+- `complete_input_line`: movement Digital In line connected to acquisition Done output
+- `acquisition_timeout_s`: maximum wait for Done HIGH
+- `reset_timeout_s`: maximum wait for Done to return LOW after Ready is lowered
+- `polling_interval_ms`: interval used while checking the latched input state
+
+The separate dummy profile contains matching `ready_input_line` and
+`complete_output_line` assignments plus `acquisition_duration_s`. The physical
+wiring must cross movement Ready output to dummy Ready input and dummy Done
+output to movement Done input. Verify device, port, and line assignments before connection.
 
 ### Zaber connection settings
 
@@ -312,6 +384,8 @@ The production package is under `src/acq_staging`.
 | `models.py` | Axis names, adapter types, identity, status, diagnostics, and pose models. |
 | `configuration.py` | JSON parsing, validation, defaults, loading, and atomic saving. |
 | `services.py` | Connection, homing, motion, pose tracking, diagnostics, motion tests, and mosaic orchestration. |
+| `acquisition.py` | Movement Ready/Done coordination and the dummy acquisition state machine. |
+| `dummy_app.py` | Starts the independent dummy acquisition application. |
 | `factory.py` | Creates simulated or explicitly authorized real adapters from a profile. |
 | `logging_setup.py` | Creates rotating logs under `logs/acq_staging.log`. |
 | `adapters/base.py` | Vendor-neutral `MotionAxis` interface. |
@@ -320,6 +394,7 @@ The production package is under `src/acq_staging`.
 | `adapters/thorlabs.py` | Lazy Kinesis loader and BSC101 channel-1 rotation adapter. |
 | `adapters/digital.py` | Simulated and lazy NI-DAQmx digital I/O adapters. |
 | `gui/main_window.py` | Main window, configuration actions, global controls, polling, and background operations. |
+| `gui/dummy_acquirer_window.py` | Standalone dummy acquisition controls, status, counters, and worker lifecycle. |
 | `gui/axis_panel.py` | Reusable individual component panel. |
 | `gui/digital_panel.py` | Reusable Digital In/Out pin-state and control panel. |
 | `gui/configuration_dialog.py` | Structured, tooltipped profile editor with load, apply, and save actions. |
@@ -345,7 +420,7 @@ python -m pytest -p no:cacheprovider
 The expected current result is:
 
 ```text
-45 passed, 1 deselected
+56 passed, 1 deselected
 ```
 
 The deselected item is the hardware safety placeholder. The default pytest
@@ -401,6 +476,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
 | `test_thorlabs_adapter.py` | BSC101 controller/channel lifecycle, exact actuator-settings validation, cleanup, and callback movement using fakes. |
 | `test_digital_adapter.py` | Whole-port bitmask reads and selected multi-pin writes with NI-DAQ fakes. |
+| `test_acquisition.py` | Idle preflight, latched Ready/Done exchange, timeout cleanup, and dummy responses. |
 | `test_hardware_markers.py` | Guard proving hardware tests are excluded from normal pytest runs. |
 
 The Zaber and Thorlabs adapter tests do not access physical devices.
@@ -542,6 +618,8 @@ The GUI writes rotating logs to:
 logs/acq_staging.log
 ```
 
+The standalone dummy acquirer writes rotating logs to `logs/dummy_acquirer.log`.
+
 Each mosaic also creates a dedicated audit log under:
 
 ```text
@@ -551,9 +629,9 @@ logs/mosaics/YYYY_MM_DD_HH-mm-ss.log
 Every line contains a local ISO timestamp, event name, and compact JSON details.
 Events include mosaic start/failure/completion, tile indices and absolute XYZ
 targets, movement start and observed completion positions, reused positions,
-acknowledged disconnected-axis skips, settling and dwell boundaries, and tile
-completion. Successful Digital Out writes during the mosaic are included with
-their pin states and whether they were explicit or continuous reassertions.
+acknowledged disconnected-axis skips, settling and dwell boundaries, acquisition
+Ready/Done transitions, reset completion, timeout failures, and tile completion.
+Successful Digital Out writes include their pin states and source.
 
 Common errors:
 
@@ -573,7 +651,7 @@ Common errors:
 - No vibratome support
 - One Z stage only
 - No camera acquisition
-- No camera acquisition or tile-trigger integration yet
+- No real data acquisition; the included acquirer is a timing/handshake simulator
 - No laboratory-validated hardware pytest suite yet
 - Real vendor adapters are mock-tested but still require controlled hardware validation
 

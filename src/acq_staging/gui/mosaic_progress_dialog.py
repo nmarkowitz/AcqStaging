@@ -14,8 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from acq_staging.configuration import MosaicConfig
-from acq_staging.models import MosaicProgress, MosaicTilePhase
+from acq_staging.models import MosaicProgress, MosaicRunSpec, MosaicTilePhase
 
 PENDING_COLOR = "#b0b0b0"
 CURRENT_COLOR = "#f6a623"
@@ -25,7 +24,7 @@ COMPLETE_COLOR = "#4caf50"
 class MosaicProgressDialog(QDialog):
     """Display pending, active, and completed tiles for every Z plane."""
 
-    def __init__(self, config: MosaicConfig, parent: QWidget | None = None) -> None:
+    def __init__(self, run_spec: MosaicRunSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Mosaic Tiling Progress")
         self.setModal(False)
@@ -46,16 +45,16 @@ class MosaicProgressDialog(QDialog):
         content = QWidget()
         planes = QVBoxLayout(content)
         # Each Z plane receives a separate XY grid using serpentine traversal numbers.
-        order = self._tile_order(config)
-        for z_index in range(config.tiles_z):
-            group = QGroupBox(f"Z plane {z_index + 1} of {config.tiles_z}")
+        order = self._tile_order(run_spec)
+        for z_index in range(run_spec.tiles_z):
+            group = QGroupBox(f"Z plane {z_index + 1} of {run_spec.tiles_z}")
             grid = QGridLayout(group)
             grid.addWidget(QLabel("Y ↓ / X →"), 0, 0)
-            for x_index in range(config.tiles_x):
+            for x_index in range(run_spec.tiles_x):
                 grid.addWidget(QLabel(str(x_index)), 0, x_index + 1)
-            for y_index in range(config.tiles_y):
+            for y_index in range(run_spec.tiles_y):
                 grid.addWidget(QLabel(str(y_index)), y_index + 1, 0)
-                for x_index in range(config.tiles_x):
+                for x_index in range(run_spec.tiles_x):
                     number = order[(x_index, y_index, z_index)]
                     tile = QLabel(str(number))
                     tile.setObjectName(f"mosaic_tile_{z_index}_{y_index}_{x_index}")
@@ -86,14 +85,15 @@ class MosaicProgressDialog(QDialog):
         tile = self.tiles.get(key)
         if tile is None:
             return
-        # Current events turn orange; completion events permanently turn green.
-        color = (
-            CURRENT_COLOR
-            if progress.phase is MosaicTilePhase.CURRENT
-            else COMPLETE_COLOR
-        )
+        # Movement and acquisition keep the tile current until completion turns it green.
+        color = COMPLETE_COLOR if progress.phase is MosaicTilePhase.COMPLETE else CURRENT_COLOR
         self._set_color(tile, color)
-        action = "Running" if progress.phase is MosaicTilePhase.CURRENT else "Completed"
+        actions = {
+            MosaicTilePhase.CURRENT: "Running",
+            MosaicTilePhase.ACQUIRING: "Awaiting acquisition for",
+            MosaicTilePhase.COMPLETE: "Completed",
+        }
+        action = actions[progress.phase]
         self.status_label.setText(f"{action} tile {progress.number} of {progress.total}")
 
     def mark_finished(self) -> None:
@@ -105,15 +105,15 @@ class MosaicProgressDialog(QDialog):
         self.status_label.setText(f"Mosaic stopped: {message}")
 
     @staticmethod
-    def _tile_order(config: MosaicConfig) -> dict[tuple[int, int, int], int]:
+    def _tile_order(run_spec: MosaicRunSpec) -> dict[tuple[int, int, int], int]:
         # Match service traversal so displayed numbers reproduce the execution order.
         order: dict[tuple[int, int, int], int] = {}
         number = 1
-        for z_index in range(config.tiles_z):
-            for y_index in range(config.tiles_y):
-                x_indices = range(config.tiles_x)
+        for z_index in range(run_spec.tiles_z):
+            for y_index in range(run_spec.tiles_y):
+                x_indices = range(run_spec.tiles_x)
                 if y_index % 2:
-                    x_indices = range(config.tiles_x - 1, -1, -1)
+                    x_indices = range(run_spec.tiles_x - 1, -1, -1)
                 for x_index in x_indices:
                     order[(x_index, y_index, z_index)] = number
                     number += 1

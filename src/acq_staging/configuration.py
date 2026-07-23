@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,8 @@ from acq_staging.models import (
     DigitalDirection,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+DUMMY_ACQUIRER_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +152,7 @@ class UiConfig:
 
 @dataclass(frozen=True, slots=True)
 class MosaicConfig:
-    """Motion-only serpentine mosaic parameters."""
+    """Serpentine mosaic geometry and movement timing parameters."""
 
     step_x_mm: float
     step_y_mm: float
@@ -230,6 +232,60 @@ class DigitalIOConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AcquisitionHandshakeConfig:
+    """Movement-side DAQ handshake settings for tile acquisition."""
+
+    enabled: bool = False
+    ready_output_line: int = 0
+    complete_input_line: int = 0
+    acquisition_timeout_s: float = 300.0
+    reset_timeout_s: float = 30.0
+    polling_interval_ms: int = 20
+
+    def validate(self, digital_io: dict[DigitalDirection, DigitalIOConfig]) -> None:
+        # Positive timing remains required even while the optional handshake is disabled.
+        if self.acquisition_timeout_s <= 0 or self.reset_timeout_s <= 0:
+            raise ConfigurationError("acquisition_handshake: timeouts must be positive")
+        if self.polling_interval_ms <= 0:
+            raise ConfigurationError("acquisition_handshake.polling_interval_ms: must be positive")
+        if not self.enabled:
+            return
+        # Enabled handshake lines must be owned by their matching configured DAQ direction.
+        if self.ready_output_line not in digital_io[DigitalDirection.OUTPUT].selected_lines:
+            raise ConfigurationError(
+                "acquisition_handshake.ready_output_line: not selected by digital_out"
+            )
+        if self.complete_input_line not in digital_io[DigitalDirection.INPUT].selected_lines:
+            raise ConfigurationError(
+                "acquisition_handshake.complete_input_line: not selected by digital_in"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DummyAcquirerHandshakeConfig:
+    """Dummy acquisition timing and DAQ line assignments."""
+
+    ready_input_line: int
+    complete_output_line: int
+    acquisition_duration_s: float = 1.0
+    reset_timeout_s: float = 30.0
+    polling_interval_ms: int = 20
+
+    def validate(self, digital_io: dict[DigitalDirection, DigitalIOConfig]) -> None:
+        # The dummy accepts an immediate acquisition but all wait controls must be positive.
+        if self.acquisition_duration_s < 0:
+            raise ConfigurationError("handshake.acquisition_duration_s: must not be negative")
+        if self.reset_timeout_s <= 0 or self.polling_interval_ms <= 0:
+            raise ConfigurationError(
+                "handshake: reset timeout and polling interval must be positive"
+            )
+        if self.ready_input_line not in digital_io[DigitalDirection.INPUT].selected_lines:
+            raise ConfigurationError("handshake.ready_input_line: not selected by digital_in")
+        if self.complete_output_line not in digital_io[DigitalDirection.OUTPUT].selected_lines:
+            raise ConfigurationError("handshake.complete_output_line: not selected by digital_out")
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Complete application profile."""
 
@@ -240,6 +296,7 @@ class AppConfig:
     ui: UiConfig
     mosaic: MosaicConfig
     digital_io: dict[DigitalDirection, DigitalIOConfig]
+    acquisition_handshake: AcquisitionHandshakeConfig
 
     def validate(self) -> None:
         # Reject unknown schema versions instead of silently misreading profiles.
@@ -275,6 +332,7 @@ class AppConfig:
             raise ConfigurationError("digital_io: digital_in and digital_out are required")
         for direction in DigitalDirection:
             self.digital_io[direction].validate(direction)
+        self.acquisition_handshake.validate(self.digital_io)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a JSON-compatible dictionary."""
@@ -298,6 +356,47 @@ class AppConfig:
                 }
                 for direction, component in self.digital_io.items()
             },
+            "acquisition_handshake": asdict(self.acquisition_handshake),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DummyAcquirerConfig:
+    """Complete standalone dummy-acquirer profile."""
+
+    schema_version: int
+    profile_name: str
+    digital_io: dict[DigitalDirection, DigitalIOConfig]
+    handshake: DummyAcquirerHandshakeConfig
+
+    def validate(self) -> None:
+        # Reject incompatible dummy profiles before constructing any DAQ adapter.
+        if self.schema_version != DUMMY_ACQUIRER_SCHEMA_VERSION:
+            raise ConfigurationError(
+                "schema_version: expected "
+                f"{DUMMY_ACQUIRER_SCHEMA_VERSION}, got {self.schema_version}"
+            )
+        if not self.profile_name.strip():
+            raise ConfigurationError("profile_name: must not be empty")
+        if set(self.digital_io) != set(DigitalDirection):
+            raise ConfigurationError("digital_io: digital_in and digital_out are required")
+        for direction in DigitalDirection:
+            self.digital_io[direction].validate(direction)
+        self.handshake.validate(self.digital_io)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the dummy profile to a JSON-compatible dictionary."""
+        return {
+            "schema_version": self.schema_version,
+            "profile_name": self.profile_name,
+            "digital_io": {
+                direction.value: {
+                    **asdict(component),
+                    "adapter": component.adapter.value,
+                }
+                for direction, component in self.digital_io.items()
+            },
+            "handshake": asdict(self.handshake),
         }
 
 
@@ -349,9 +448,26 @@ def _parse_digital(raw: object, field: str) -> DigitalIOConfig:
         raise ConfigurationError(f"{field}: {exc}") from exc
 
 
+def _parse_digital_io(raw: object) -> dict[DigitalDirection, DigitalIOConfig]:
+    # Share the exact DAQ profile parser between the movement and dummy applications.
+    return {
+        DigitalDirection(name): _parse_digital(value, f"digital_io.{name}")
+        for name, value in _mapping(raw, "digital_io").items()
+    }
+
+
+def _parse_handshake_line(value: object, field: str) -> int:
+    # Handshake assignments accept the same integer or lineN syntax as DAQ selections.
+    return _parse_digital_line(value, field)
+
+
 def config_from_dict(raw: object) -> AppConfig:
     """Parse and validate a configuration dictionary."""
-    data = _mapping(raw, "configuration")
+    data = deepcopy(_mapping(raw, "configuration"))
+    # Upgrade schema-3 profiles in memory without changing the source file.
+    if data.get("schema_version") == 3:
+        data["schema_version"] = SCHEMA_VERSION
+        data["acquisition_handshake"] = asdict(AcquisitionHandshakeConfig())
     # Convert external strings and mappings into the application's typed model.
     try:
         connections = {
@@ -363,10 +479,18 @@ def config_from_dict(raw: object) -> AppConfig:
             AxisName(name): _parse_component(value, f"components.{name}")
             for name, value in components_raw.items()
         }
-        digital_io = {
-            DigitalDirection(name): _parse_digital(value, f"digital_io.{name}")
-            for name, value in _mapping(data["digital_io"], "digital_io").items()
-        }
+        digital_io = _parse_digital_io(data["digital_io"])
+        handshake_data = dict(
+            _mapping(data["acquisition_handshake"], "acquisition_handshake")
+        )
+        handshake_data["ready_output_line"] = _parse_handshake_line(
+            handshake_data["ready_output_line"],
+            "acquisition_handshake.ready_output_line",
+        )
+        handshake_data["complete_input_line"] = _parse_handshake_line(
+            handshake_data["complete_input_line"],
+            "acquisition_handshake.complete_input_line",
+        )
         config = AppConfig(
             schema_version=int(data["schema_version"]),
             profile_name=str(data["profile_name"]),
@@ -375,6 +499,32 @@ def config_from_dict(raw: object) -> AppConfig:
             ui=UiConfig(**_mapping(data.get("ui", {}), "ui")),
             mosaic=MosaicConfig(**_mapping(data["mosaic"], "mosaic")),
             digital_io=digital_io,
+            acquisition_handshake=AcquisitionHandshakeConfig(**handshake_data),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError(str(exc)) from exc
+    config.validate()
+    return config
+
+
+def dummy_acquirer_config_from_dict(raw: object) -> DummyAcquirerConfig:
+    """Parse and validate a standalone dummy-acquirer profile."""
+    data = _mapping(raw, "configuration")
+    # Build the shared DAQ records before validating dummy-specific handshake fields.
+    try:
+        digital_io = _parse_digital_io(data["digital_io"])
+        handshake_data = dict(_mapping(data["handshake"], "handshake"))
+        handshake_data["ready_input_line"] = _parse_handshake_line(
+            handshake_data["ready_input_line"], "handshake.ready_input_line"
+        )
+        handshake_data["complete_output_line"] = _parse_handshake_line(
+            handshake_data["complete_output_line"], "handshake.complete_output_line"
+        )
+        config = DummyAcquirerConfig(
+            schema_version=int(data["schema_version"]),
+            profile_name=str(data["profile_name"]),
+            digital_io=digital_io,
+            handshake=DummyAcquirerHandshakeConfig(**handshake_data),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError(str(exc)) from exc
@@ -392,9 +542,30 @@ def load_config(path: str | Path) -> AppConfig:
     return config_from_dict(raw)
 
 
+def load_dummy_acquirer_config(path: str | Path) -> DummyAcquirerConfig:
+    """Load and validate a standalone dummy-acquirer profile."""
+    config_path = Path(path)
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigurationError(f"{config_path}: {exc}") from exc
+    return dummy_acquirer_config_from_dict(raw)
+
+
 def save_config(config: AppConfig, path: str | Path) -> None:
     """Atomically save a validated JSON profile."""
     config.validate()
+    _atomic_save(config.to_dict(), path)
+
+
+def save_dummy_acquirer_config(config: DummyAcquirerConfig, path: str | Path) -> None:
+    """Atomically save a validated standalone dummy-acquirer profile."""
+    config.validate()
+    _atomic_save(config.to_dict(), path)
+
+
+def _atomic_save(data: dict[str, Any], path: str | Path) -> None:
+    # Both applications use the same replace-on-success persistence guarantee.
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Write beside the destination so os.replace remains an atomic filesystem operation.
@@ -407,7 +578,7 @@ def save_config(config: AppConfig, path: str | Path) -> None:
     temporary = Path(temporary_name)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(config.to_dict(), stream, indent=2)
+            json.dump(data, stream, indent=2)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -458,6 +629,27 @@ def default_simulation_config() -> AppConfig:
                 (0, 1, 2, 3),
             ),
         },
+        acquisition_handshake=AcquisitionHandshakeConfig(),
+    )
+    config.validate()
+    return config
+
+
+def default_dummy_acquirer_config() -> DummyAcquirerConfig:
+    """Return the safe disconnected simulation profile for the dummy acquirer."""
+    # Separate simulated ports mirror the two physical wire directions without I/O.
+    config = DummyAcquirerConfig(
+        schema_version=DUMMY_ACQUIRER_SCHEMA_VERSION,
+        profile_name="Dummy Acquirer Simulation",
+        digital_io={
+            DigitalDirection.INPUT: DigitalIOConfig(
+                True, DigitalAdapterType.SIMULATED, "SimDAQ", "P2", 1, (0,)
+            ),
+            DigitalDirection.OUTPUT: DigitalIOConfig(
+                True, DigitalAdapterType.SIMULATED, "SimDAQ", "P3", 1, (0,)
+            ),
+        },
+        handshake=DummyAcquirerHandshakeConfig(0, 0),
     )
     config.validate()
     return config

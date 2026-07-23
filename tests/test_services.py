@@ -6,7 +6,13 @@ from acq_staging.adapters.simulated import SimulatedMotionAxis
 from acq_staging.configuration import MosaicConfig, default_simulation_config
 from acq_staging.errors import MotionSafetyError
 from acq_staging.factory import build_simulation_axes
-from acq_staging.models import HOME_ORDER, AxisName, MosaicProgress, MosaicTilePhase
+from acq_staging.models import (
+    HOME_ORDER,
+    AxisName,
+    MosaicProgress,
+    MosaicRunSpec,
+    MosaicTilePhase,
+)
 from acq_staging.services import MotionService
 
 
@@ -100,6 +106,49 @@ def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
     assert names[-1] == "MOSAIC_COMPLETE"
 
 
+def test_count_mosaic_run_spec_starts_from_current_pose() -> None:
+    service = make_service()
+    service.connect_all()
+    service.home_all()
+    service.move_absolute(AxisName.X, 5.0)
+    run_spec = MosaicRunSpec.from_tile_counts(0.5, 0.0, 0.0, 2, 1, 1)
+
+    tiles = service.plan_mosaic(run_spec=run_spec)
+
+    assert [tile.x_mm for tile in tiles] == [5.0, 5.5]
+
+
+def test_endpoint_mosaic_runs_inferred_negative_direction_serpentine() -> None:
+    service = make_service()
+    service.connect_all()
+    service.home_all()
+    run_spec = MosaicRunSpec.from_endpoints(
+        1.0,
+        1.0,
+        0.0,
+        3.0,
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+        0.0,
+    )
+
+    tiles = service.run_mosaic(run_spec=run_spec)
+
+    assert [(tile.x_mm, tile.y_mm) for tile in tiles] == [
+        (3.0, 0.0),
+        (2.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (2.0, 1.0),
+        (3.0, 1.0),
+        (3.0, 2.0),
+        (2.0, 2.0),
+        (1.0, 2.0),
+    ]
+
+
 def test_mosaic_preflight_rejects_entire_path_before_motion() -> None:
     config = replace(
         default_simulation_config(),
@@ -111,6 +160,28 @@ def test_mosaic_preflight_rejects_entire_path_before_motion() -> None:
 
     with pytest.raises(MotionSafetyError, match="outside software limits"):
         service.run_mosaic()
+
+    assert service.axes[AxisName.X].get_position() == 0.0
+
+
+def test_endpoint_mosaic_preflight_rejects_path_before_motion() -> None:
+    service = make_service()
+    service.connect_all()
+    service.home_all()
+    run_spec = MosaicRunSpec.from_endpoints(
+        400.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        400.0,
+        0.0,
+        0.0,
+    )
+
+    with pytest.raises(MotionSafetyError, match="outside software limits"):
+        service.run_mosaic(run_spec=run_spec)
 
     assert service.axes[AxisName.X].get_position() == 0.0
 

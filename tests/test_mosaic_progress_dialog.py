@@ -1,19 +1,18 @@
 from PyQt6.QtWidgets import QLabel
 from pytestqt.qtbot import QtBot
 
-from acq_staging.configuration import MosaicConfig
 from acq_staging.gui.mosaic_progress_dialog import (
     COMPLETE_COLOR,
     CURRENT_COLOR,
     PENDING_COLOR,
     MosaicProgressDialog,
 )
-from acq_staging.models import MosaicProgress, MosaicTile, MosaicTilePhase
+from acq_staging.models import MosaicProgress, MosaicRunSpec, MosaicTile, MosaicTilePhase
 
 
 def test_mosaic_progress_dialog_colors_current_and_complete_tiles(qtbot: QtBot) -> None:
-    config = MosaicConfig(1.0, 1.0, 1.0, 3, 2, 2, 0.0, 0.0, 10.0)
-    dialog = MosaicProgressDialog(config)
+    run_spec = MosaicRunSpec.from_tile_counts(1.0, 1.0, 1.0, 3, 2, 2)
+    dialog = MosaicProgressDialog(run_spec)
     qtbot.addWidget(dialog)
     assert len(dialog.tiles) == 12
     assert all(tile.property("tile_color") == PENDING_COLOR for tile in dialog.tiles.values())

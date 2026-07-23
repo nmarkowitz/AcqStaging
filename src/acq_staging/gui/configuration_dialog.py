@@ -23,7 +23,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from acq_staging.configuration import AppConfig, config_from_dict, load_config, save_config
+from acq_staging.configuration import (
+    AppConfig,
+    DummyAcquirerConfig,
+    config_from_dict,
+    dummy_acquirer_config_from_dict,
+    load_config,
+    load_dummy_acquirer_config,
+    save_config,
+    save_dummy_acquirer_config,
+)
 from acq_staging.errors import ConfigurationError
 
 PathPart = str | int
@@ -32,11 +41,15 @@ PathPart = str | int
 class ConfigurationDialog(QDialog):
     """Edit, load, validate, apply, and save complete configuration profiles."""
 
-    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | DummyAcquirerConfig,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Configuration")
         self.resize(900, 720)
-        self.validated_config: AppConfig | None = None
+        self.validated_config: AppConfig | DummyAcquirerConfig | None = None
         self._config = config
 
         # The tree mirrors the nested JSON profile while editing only leaf values.
@@ -118,7 +131,7 @@ class ConfigurationDialog(QDialog):
         item.setToolTip(0, tooltip)
         item.setToolTip(1, tooltip)
 
-    def _validated_from_tree(self) -> AppConfig:
+    def _validated_from_tree(self) -> AppConfig | DummyAcquirerConfig:
         # Apply edited leaves to a copy before running full typed profile validation.
         raw = copy.deepcopy(self._config.to_dict())
         iterator = QTreeWidgetItemIterator(self.tree)
@@ -132,7 +145,25 @@ class ConfigurationDialog(QDialog):
                 value = self._parse_value(item.text(1), original, ".".join(map(str, path)))
                 self._set_path(raw, path, value)
             iterator += 1
+        return self._config_from_dict(raw)
+
+    def _config_from_dict(self, raw: object) -> AppConfig | DummyAcquirerConfig:
+        """Parse one edited profile using the dialog's application schema."""
         return config_from_dict(raw)
+
+    def _load_config(self, path: str) -> AppConfig | DummyAcquirerConfig:
+        """Load one movement-application profile."""
+        return load_config(path)
+
+    def _save_config(
+        self,
+        config: AppConfig | DummyAcquirerConfig,
+        path: Path,
+    ) -> None:
+        """Save one movement-application profile after narrowing its type."""
+        if not isinstance(config, AppConfig):
+            raise ConfigurationError("expected a movement application profile")
+        save_config(config, path)
 
     def _validate_and_accept(self) -> None:
         # Save applies only a completely valid profile to the parent GUI.
@@ -154,7 +185,7 @@ class ConfigurationDialog(QDialog):
         if not path:
             return
         try:
-            self._config = load_config(path)
+            self._config = self._load_config(path)
         except Exception as exc:
             QMessageBox.critical(self, "Invalid configuration", str(exc))
             return
@@ -176,7 +207,7 @@ class ConfigurationDialog(QDialog):
         if not path:
             return
         try:
-            save_config(config, Path(path))
+            self._save_config(config, Path(path))
         except Exception as exc:
             QMessageBox.critical(self, "Unable to save configuration", str(exc))
             return
@@ -237,7 +268,43 @@ class ConfigurationDialog(QDialog):
             "line_count": "Physical DAQ port width from 1 through 8.",
             "lines": "DAQ pins to use, or null for the whole configured port.",
             "polling_interval_ms": "Background state refresh interval in milliseconds.",
+            "step_x_mm": "Default X step for the per-run mosaic setup, in millimetres.",
+            "step_y_mm": "Default Y step for the per-run mosaic setup, in millimetres.",
+            "step_z_mm": "Default Z step for the per-run mosaic setup, in millimetres.",
+            "tiles_x": "Default X tile count for the per-run mosaic setup.",
+            "tiles_y": "Default Y tile count for the per-run mosaic setup.",
+            "tiles_z": "Default Z tile count for the per-run mosaic setup.",
             "settling_time_s": "Wait after reaching a mosaic tile, in seconds.",
             "dwell_time_s": "Optional per-tile dwell duration in seconds.",
+            "ready_output_line": "Digital Out line held HIGH when movement is complete.",
+            "complete_input_line": "Digital In line raised by acquisition when data is ready.",
+            "acquisition_timeout_s": "Maximum wait for acquisition Done to become HIGH.",
+            "reset_timeout_s": "Maximum wait for the peer signal to return LOW.",
+            "ready_input_line": "Digital In line receiving movement Ready.",
+            "complete_output_line": "Digital Out line held HIGH after dummy acquisition.",
+            "acquisition_duration_s": "Dummy acquisition duration before Done becomes HIGH.",
         }
         return descriptions.get(leaf, f"Configuration value for {dotted}.")
+
+
+class DummyAcquirerConfigurationDialog(ConfigurationDialog):
+    """Edit standalone dummy-acquirer profiles with the shared tree interface."""
+
+    def __init__(self, config: DummyAcquirerConfig, parent: QWidget | None = None) -> None:
+        super().__init__(config, parent)
+        self.setWindowTitle("Edit Dummy Acquirer Configuration")
+
+    def _config_from_dict(self, raw: object) -> DummyAcquirerConfig:
+        return dummy_acquirer_config_from_dict(raw)
+
+    def _load_config(self, path: str) -> DummyAcquirerConfig:
+        return load_dummy_acquirer_config(path)
+
+    def _save_config(
+        self,
+        config: AppConfig | DummyAcquirerConfig,
+        path: Path,
+    ) -> None:
+        if not isinstance(config, DummyAcquirerConfig):
+            raise ConfigurationError("expected a dummy-acquirer profile")
+        save_dummy_acquirer_config(config, path)

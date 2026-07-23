@@ -10,8 +10,15 @@ from PyQt6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 
-from acq_staging.configuration import default_simulation_config, load_config
-from acq_staging.gui.configuration_dialog import ConfigurationDialog
+from acq_staging.configuration import (
+    default_dummy_acquirer_config,
+    default_simulation_config,
+    load_config,
+)
+from acq_staging.gui.configuration_dialog import (
+    ConfigurationDialog,
+    DummyAcquirerConfigurationDialog,
+)
 
 
 def find_leaf(
@@ -75,3 +82,12 @@ def test_configuration_dialog_saves_and_loads_files(
     dialog._load_file()
     assert find_leaf(dialog, ("profile_name",)).text(1) == "Saved From Structured Editor"
     destination.unlink(missing_ok=True)
+
+
+def test_dummy_configuration_dialog_exposes_handshake_tooltips(qtbot: QtBot) -> None:
+    dialog = DummyAcquirerConfigurationDialog(default_dummy_acquirer_config())
+    qtbot.addWidget(dialog)
+
+    duration = find_leaf(dialog, ("handshake", "acquisition_duration_s"))
+
+    assert "Dummy acquisition duration" in duration.toolTip(0)

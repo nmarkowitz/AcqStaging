@@ -11,7 +11,7 @@ from acq_staging.adapters.digital import (
 from acq_staging.adapters.simulated import SimulatedMotionAxis
 from acq_staging.adapters.thorlabs import ThorlabsBSC101Stage
 from acq_staging.adapters.zaber import ZaberConnectionManager, ZaberLinearStage
-from acq_staging.configuration import AppConfig
+from acq_staging.configuration import AppConfig, DummyAcquirerConfig
 from acq_staging.errors import ConfigurationError
 from acq_staging.models import (
     HOME_ORDER,
@@ -74,7 +74,7 @@ def build_axes(
 
 
 def build_digital_devices(
-    config: AppConfig,
+    config: AppConfig | DummyAcquirerConfig,
     *,
     allow_hardware: bool = False,
 ) -> dict[DigitalDirection, DigitalIODevice]:
