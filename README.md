@@ -93,6 +93,56 @@ python -m acq_staging.app
 The window starts with four simulated motion components and two simulated
 digital components. Nothing is connected or homed at startup.
 
+### Non-blocking interactive Python session
+
+Use IPython or Jupyter's Qt event-loop integration when you want the GUI to stay
+responsive while retaining an interactive prompt. From the activated project
+environment, start IPython:
+
+```powershell
+python -m IPython
+```
+
+Then run:
+
+```python
+%gui qt
+from acq_staging.app import launch_gui
+
+gui = launch_gui()
+window = gui.window
+motion = window.service
+config = window.config
+```
+
+`launch_gui()` returns immediately. Keeping `gui` assigned preserves strong
+references to both `gui.app` and `gui.window`. The window starts with the same
+safe, disconnected simulation profile as the console command. Useful objects
+for exploration include `window.config`, `window.service`,
+`window.digital_service`, `window.panels`, and `window.service.axes`.
+
+Close the interactive window and run its normal cleanup path with:
+
+```python
+gui.close()
+```
+
+In a plain Python interpreter without `%gui qt`, the helper is still
+non-blocking, but Qt processes updates only when requested:
+
+```python
+from acq_staging.app import launch_gui
+
+gui = launch_gui()
+gui.process_events()
+```
+
+Direct service calls from an interactive prompt do not show the GUI's motion
+confirmation dialogs. Keep the default simulations for exploration. Do not load
+a hardware profile or call connection, homing, or motion functions without the
+same explicit laboratory authorization and profile review required elsewhere
+in this guide.
+
 The independent dummy acquisition GUI starts with:
 
 ```powershell

@@ -83,6 +83,7 @@ Primary references: `references/ni-examples/digital_in` and
 | 10 | Digital input and output components | Complete (simulation/fake-verified) |
 | 11 | DAQ acquisition handshake and dummy acquirer | Complete (simulation/fake-verified) |
 | 12 | Per-run count or endpoint mosaic geometry | Complete (simulation-verified) |
+| 13 | Non-blocking interactive GUI launch | Complete (simulation-verified) |
 
 Every phase must pass:
 
@@ -159,8 +160,21 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Preserve full-path preflight, serpentine traversal, DAQ coordination, and Stop.
 - [x] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 13 — Non-blocking interactive GUI launch
+
+- [x] Add a reusable GUI session that exposes the application and main window.
+- [x] Preserve blocking behavior for the `acq-staging` console command.
+- [x] Document IPython/Jupyter event-loop integration and interactive safety.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Added `launch_gui()` and `GuiSession` for non-blocking interactive exploration
+  while preserving the existing blocking console entry point.
+- Documented `%gui qt`, returned application/window references, manual event
+  processing, normal cleanup, and the simulation-only interactive safety boundary.
+- Normal verification: 67 passed, 1 hardware test deselected; Ruff and mypy
+  pass. Interactive launch tests used simulations only. No hardware was accessed.
 - Added transient per-run mosaic geometry with tile-count mode starting at the
   observed XYZ pose and endpoint mode using inclusive absolute begin/end positions.
 - Added editable per-run XYZ steps, inferred positive or negative axis direction,
