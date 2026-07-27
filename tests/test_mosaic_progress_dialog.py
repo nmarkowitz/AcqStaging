@@ -126,7 +126,7 @@ def test_timing_appears_after_two_completed_tiles_and_updates(qtbot: QtBot) -> N
 
     # Start timing on the first active tile but keep both labels hidden.
     view.update_progress(progress(1, MosaicTilePhase.CURRENT))
-    now[0] = 4.0
+    now[0] = 5.0
     view.update_progress(progress(1, MosaicTilePhase.COMPLETE))
     assert view.elapsed_label.isHidden()
     assert view.remaining_label.isHidden()
@@ -138,11 +138,12 @@ def test_timing_appears_after_two_completed_tiles_and_updates(qtbot: QtBot) -> N
     assert view.elapsed_label.text() == "Elapsed: 00:00:10"
     assert view.remaining_label.text() == "Estimated remaining: 00:00:20"
 
-    # Each later completed tile refreshes both elapsed and remaining values.
-    now[0] = 15.0
+    # A slower recent tile raises the weighted estimate instead of diluting it globally.
+    now[0] = 19.0
     view.update_progress(progress(3, MosaicTilePhase.COMPLETE))
-    assert view.elapsed_label.text() == "Elapsed: 00:00:15"
-    assert view.remaining_label.text() == "Estimated remaining: 00:00:15"
+    assert view.elapsed_label.text() == "Elapsed: 00:00:19"
+    assert view.remaining_label.text() == "Estimated remaining: 00:00:21"
+    assert "eight recent" in view.remaining_label.toolTip()
 
     # Automatic transition resets estimates until two Tiling 2 tiles complete.
     view.update_progress(progress(1, MosaicTilePhase.CURRENT, tiling_number=2))

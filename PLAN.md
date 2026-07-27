@@ -89,6 +89,7 @@ Primary references: `references/ni-examples/digital_in` and
 | 16 | Fixed current-tiling viewer and timing estimate | Complete (simulation-verified) |
 | 17 | Circular numbered digital I/O indicators | Complete (simulation-verified) |
 | 18 | In-place endpoint normalization after editing | Complete (simulation-verified) |
+| 19 | Recent-pace duration prediction | Complete (simulation-verified) |
 
 Every phase must pass:
 
@@ -212,8 +213,18 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Leave out-of-limit rounded values uncommitted and display the validation error.
 - [x] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 19 — Recent-pace duration prediction
+
+- [x] Estimate remaining time from a recent, linearly weighted eight-tile window.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Remaining-time prediction now favors up to eight recent tile durations so it
+  adapts to changing movement or acquisition pace.
+- Removed the System Status and Health dashboard and all of its GUI hooks.
+- Normal verification: 80 passed, 1 hardware safety guard deselected; Ruff and
+  mypy pass. Tests used simulations and GUI fakes; no hardware was accessed.
 - Mosaic endpoint fields now commit their outward-rounded stop values when the
   edited start, stop, or step box loses focus or accepts Enter.
 - Replaced text-heavy Digital In and Digital Out checkboxes with matching round,

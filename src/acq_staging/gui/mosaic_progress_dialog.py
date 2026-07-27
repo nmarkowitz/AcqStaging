@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from time import monotonic
 
@@ -270,7 +271,9 @@ class AxisMosaicView(QWidget):
         self._clock = clock
         self._active_tiling: int | None = None
         self._tiling_started_at: float | None = None
+        self._last_completion_at: float | None = None
         self._completed_tiles: set[int] = set()
+        self._recent_tile_durations_s: deque[float] = deque(maxlen=8)
         self.status_label = QLabel("No mosaic configured")
         self.status_label.setObjectName("mosaic_progress_status")
         self.axis_labels: dict[AxisName, QLabel] = {}
@@ -309,6 +312,9 @@ class AxisMosaicView(QWidget):
         self.elapsed_label.setObjectName("mosaic_elapsed_time")
         self.remaining_label = QLabel()
         self.remaining_label.setObjectName("mosaic_remaining_time")
+        self.remaining_label.setToolTip(
+            "Estimate uses a weighted average of up to eight recent completed tiles."
+        )
         self.elapsed_label.hide()
         self.remaining_label.hide()
         timing = QHBoxLayout()
@@ -406,20 +412,40 @@ class AxisMosaicView(QWidget):
     def _reset_timing(self) -> None:
         """Hide stale estimates until two tiles complete in the active tiling."""
         self._tiling_started_at = None
+        self._last_completion_at = None
         self._completed_tiles.clear()
+        self._recent_tile_durations_s.clear()
         self.elapsed_label.hide()
         self.remaining_label.hide()
 
     def _update_timing(self, progress: MosaicProgress) -> None:
-        """Estimate remaining time from average completed-tile duration."""
+        """Estimate remaining time from recently completed tile durations."""
         # Duplicate GUI delivery must not count one acquisition more than once.
+        if progress.number in self._completed_tiles or self._tiling_started_at is None:
+            return
+        completed_at = self._clock()
+        interval_start = (
+            self._tiling_started_at
+            if self._last_completion_at is None
+            else self._last_completion_at
+        )
+        self._recent_tile_durations_s.append(max(completed_at - interval_start, 0.0))
+        self._last_completion_at = completed_at
         self._completed_tiles.add(progress.number)
-        if len(self._completed_tiles) < 2 or self._tiling_started_at is None:
+        if len(self._completed_tiles) < 2:
             return
 
-        # Average elapsed duration across this session's completed tiles predicts the rest.
-        elapsed_s = max(self._clock() - self._tiling_started_at, 0.0)
-        average_tile_s = elapsed_s / len(self._completed_tiles)
+        # Linear weights favor recent tiles while an eight-tile window rejects old pacing.
+        weights = range(1, len(self._recent_tile_durations_s) + 1)
+        weighted_total = sum(
+            duration * weight
+            for duration, weight in zip(
+                self._recent_tile_durations_s, weights, strict=True
+            )
+        )
+        weight_total = sum(range(1, len(self._recent_tile_durations_s) + 1))
+        average_tile_s = weighted_total / weight_total
+        elapsed_s = max(completed_at - self._tiling_started_at, 0.0)
         remaining_tiles = max(progress.total - progress.number, 0)
         remaining_s = average_tile_s * remaining_tiles
         self.elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed_s)}")
