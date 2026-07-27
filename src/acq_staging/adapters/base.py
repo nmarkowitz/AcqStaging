@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from acq_staging.models import ComponentIdentity, ComponentStatus
+from acq_staging.models import ComponentIdentity, ComponentStatus, LimitsConfig
 
 
 @runtime_checkable
@@ -30,3 +30,5 @@ class MotionAxis(Protocol):
     def move_relative(self, displacement: float) -> None: ...
 
     def get_position(self) -> float: ...
+
+    def get_limits(self) -> LimitsConfig: ...

@@ -7,8 +7,9 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
-from PyQt6.QtCore import QThreadPool, QTimer
+from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtWidgets import (
+    QDockWidget,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -31,7 +32,7 @@ from acq_staging.factory import build_axes, build_digital_devices, build_simulat
 from acq_staging.gui.axis_panel import AxisPanel
 from acq_staging.gui.configuration_dialog import ConfigurationDialog
 from acq_staging.gui.digital_panel import DigitalPanel
-from acq_staging.gui.mosaic_progress_dialog import MosaicProgressDialog
+from acq_staging.gui.mosaic_progress_dialog import AxisMosaicView
 from acq_staging.gui.mosaic_setup_dialog import MosaicSetupDialog
 from acq_staging.gui.workers import FunctionWorker
 from acq_staging.models import (
@@ -40,9 +41,8 @@ from acq_staging.models import (
     DiagnosticResult,
     DigitalAdapterType,
     DigitalDirection,
-    MosaicInputMode,
     MosaicProgress,
-    MosaicRunSpec,
+    MosaicSequenceSpec,
     MosaicTile,
     Pose,
 )
@@ -77,7 +77,6 @@ class MainWindow(QMainWindow):
         self.thread_pool = thread_pool
         self._poll_pending = False
         self._workers: set[FunctionWorker] = set()
-        self._mosaic_progress_dialog: MosaicProgressDialog | None = None
         self._mosaic_had_error = False
         self._mosaic_logger: MosaicAuditLogger | None = None
         self._mosaic_audit_digital_service: DigitalIOService | None = None
@@ -135,6 +134,19 @@ class MainWindow(QMainWindow):
         self.log.setMaximumHeight(150)
         root_layout.addWidget(self.log)
         self.setCentralWidget(root)
+
+        # A fixed dock keeps the only mosaic-progress view attached to the main GUI.
+        self.axis_mosaic_view = AxisMosaicView(parent=self)
+        self.axis_mosaic_view.setObjectName("axis_mosaic_view")
+        viewer_dock = QDockWidget("Axis Locations and Mosaic", self)
+        viewer_dock.setObjectName("axis_mosaic_dock")
+        viewer_dock.setWidget(self.axis_mosaic_view)
+        viewer_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+        viewer_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, viewer_dock)
         self.app_status_bar = QStatusBar()
         self.setStatusBar(self.app_status_bar)
 
@@ -146,9 +158,8 @@ class MainWindow(QMainWindow):
         )
         home_all.clicked.connect(self.request_home_all)
         start_mosaic.clicked.connect(self.request_mosaic)
-        stop_mosaic.clicked.connect(
-            lambda: self._run("Stop mosaic", self.service.stop_mosaic)
-        )
+        stop_mosaic.clicked.connect(self.request_cancel_mosaic)
+        self.axis_mosaic_view.cancel_requested.connect(self.request_cancel_mosaic)
 
         # Timer ticks enqueue pose polling and never block the Qt event loop.
         self.poll_timer = QTimer(self)
@@ -279,7 +290,7 @@ class MainWindow(QMainWindow):
 
     def request_absolute_move(self, axis: AxisName, destination: float) -> None:
         # Large-move confirmation uses the observed current position, not the target field.
-        status = self.service.axes[axis].status()
+        status = self.service.component_status(axis)
         current = status.position
         if current is None:
             self._show_error(f"{axis.value}: position is not known")
@@ -314,7 +325,7 @@ class MainWindow(QMainWindow):
             self._run(f"Motion test {axis.value}", lambda: self.service.motion_test(axis))
 
     def request_mosaic(self) -> None:
-        # Read hardware status in a worker before asking about a partial mosaic.
+        # Read every required axis status in a worker before opening run setup.
         self._run(
             "Check mosaic readiness",
             self.service.mosaic_readiness,
@@ -322,7 +333,7 @@ class MainWindow(QMainWindow):
         )
 
     def _confirm_mosaic(self, readiness: object) -> None:
-        # Block unhomed axes and require acknowledgement for disconnected axes.
+        # A full sequence cannot bypass a disconnected or unhomed required axis.
         if not isinstance(readiness, tuple) or len(readiness) != 2:
             self._show_error("invalid mosaic readiness result")
             return
@@ -330,9 +341,13 @@ class MainWindow(QMainWindow):
         if not isinstance(disconnected, tuple) or not isinstance(unhomed, tuple):
             self._show_error("invalid mosaic readiness result")
             return
+        if disconnected:
+            names = ", ".join(axis.value.upper() for axis in disconnected)
+            self._show_error(f"Full mosaic requires connected components: {names}")
+            return
         if unhomed:
             names = ", ".join(axis.value.upper() for axis in unhomed)
-            self._show_error(f"Connected mosaic components must be homed: {names}")
+            self._show_error(f"Full mosaic requires homed components: {names}")
             return
 
         # A modal setup keeps run-specific geometry separate from the saved profile.
@@ -340,34 +355,34 @@ class MainWindow(QMainWindow):
         if run_spec is None:
             return
 
-        missing_text = ""
-        if disconnected:
-            names = ", ".join(axis.value.upper() for axis in disconnected)
-            missing_text = f" Disconnected components will be skipped: {names}."
         handshake_text = (
             " Acquisition DAQ acknowledgement is required for every tile."
             if self.config.acquisition_handshake.enabled
             else " Acquisition handshaking is disabled; dwell timing will be used."
         )
-        geometry_text = (
-            f"absolute beginning {run_spec.beginning} and end {run_spec.ending}"
-            if run_spec.input_mode is MosaicInputMode.ENDPOINTS
-            else "the current XYZ position"
-        )
+        first, second = run_spec.tilings
         if self._confirm(
-            "Confirm mosaic motion",
-            f"Run {run_spec.total_tiles} XYZ tiles from {geometry_text}, using steps "
-            f"{run_spec.steps} mm and signed extents {run_spec.extents_mm} mm?"
-            f"{missing_text}{handshake_text}",
+            "Confirm two-tiling motion",
+            f"Run {run_spec.total_tiles} total tiles starting at Tiling "
+            f"{run_spec.resume_tiling}, tile {run_spec.resume_tile}? "
+            f"Tiling 1: XY {first.beginning} to {first.ending}, Z={first.z_mm}, "
+            f"rotation=0°. Tiling 2: XY {second.beginning} to {second.ending}, "
+            f"Z={second.z_mm}, rotation={second.rotation_deg}°. Rotation changes "
+            f"use safe Z={run_spec.safe_transition_z_mm} mm.{handshake_text}",
         ):
-            self._run_mosaic(frozenset(disconnected), run_spec)
+            self._run_mosaic(run_spec)
 
-    def _get_mosaic_run_spec(self) -> MosaicRunSpec | None:
-        """Show the per-run geometry editor and return its validated result."""
+    def _get_mosaic_run_spec(self) -> MosaicSequenceSpec | None:
+        """Show the two-tiling editor and return its validated sequence."""
         dialog = MosaicSetupDialog(
             self.config.mosaic,
             self.config.components,
             self.service.pose,
+            {
+                axis: self.service.axis_limits(axis)
+                for axis in HOME_ORDER
+                if self.service.axes[axis].status().connected
+            },
             self,
         )
         if not dialog.exec():
@@ -376,8 +391,7 @@ class MainWindow(QMainWindow):
 
     def _run_mosaic(
         self,
-        allowed_disconnected: frozenset[AxisName],
-        run_spec: MosaicRunSpec,
+        run_spec: MosaicSequenceSpec,
     ) -> None:
         worker: FunctionWorker
 
@@ -399,22 +413,16 @@ class MainWindow(QMainWindow):
                 panel.setEnabled(False)
         self._append_log(f"Mosaic audit log: {logger.path}")
 
-        # Replace any completed visualization with a fresh pending-tile grid.
-        if self._mosaic_progress_dialog is not None:
-            self._mosaic_progress_dialog.close()
-        dialog = MosaicProgressDialog(run_spec, self)
-        self._mosaic_progress_dialog = dialog
+        # Replace the attached viewer's prior grid without opening another window.
+        self.axis_mosaic_view.prepare_run(run_spec)
         self._mosaic_had_error = False
-        dialog.destroyed.connect(lambda: self._clear_mosaic_dialog(dialog))
-        dialog.show()
 
-        def execute() -> list[MosaicTile]:
+        def execute() -> tuple[list[MosaicTile], list[MosaicTile]]:
             # Audit callbacks run synchronously in this worker for precise ordering.
-            return self.service.run_mosaic(
+            return self.service.run_mosaic_sequence(
+                run_spec,
                 worker.signals.progress.emit,
-                allowed_disconnected,
                 logger.log,
-                run_spec=run_spec,
             )
 
         worker = FunctionWorker(execute)
@@ -428,23 +436,25 @@ class MainWindow(QMainWindow):
         # Ignore unrelated worker payloads before updating mosaic widgets.
         if not isinstance(progress, MosaicProgress):
             return
-        if self._mosaic_progress_dialog is not None:
-            self._mosaic_progress_dialog.update_progress(progress)
+        self.axis_mosaic_view.update_progress(progress)
         tile = progress.tile
         self.app_status_bar.showMessage(
-            f"Mosaic tile {progress.number}/{progress.total}: "
-            f"X={tile.x_mm:.4f}, Y={tile.y_mm:.4f}, Z={tile.z_mm:.4f} mm"
+            f"Tiling {progress.tiling_number}, tile {progress.number}/{progress.total}: "
+            f"X={tile.x_mm:.4f}, Y={tile.y_mm:.4f}, Z={tile.z_mm:.4f} mm, "
+            f"Rotation={tile.theta_deg:.4f}°"
         )
 
     def _mosaic_failed(self, message: str) -> None:
         self._mosaic_had_error = True
-        if self._mosaic_progress_dialog is not None:
-            self._mosaic_progress_dialog.mark_failed(message)
-        self._show_error(message)
+        self.axis_mosaic_view.mark_failed(message)
+        if "mosaic stopped" in message.lower():
+            self._append_log("Mosaic cancelled by user")
+        else:
+            self._show_error(message)
 
     def _mosaic_finished(self, worker: FunctionWorker) -> None:
-        if not self._mosaic_had_error and self._mosaic_progress_dialog is not None:
-            self._mosaic_progress_dialog.mark_finished()
+        if not self._mosaic_had_error:
+            self.axis_mosaic_view.mark_finished()
         self._operation_finished(worker, "Mosaic")
         self._finish_mosaic_audit()
 
@@ -459,9 +469,11 @@ class MainWindow(QMainWindow):
         for direction, panel in self.digital_panels.items():
             panel.setEnabled(self.config.digital_io[direction].enabled)
 
-    def _clear_mosaic_dialog(self, dialog: MosaicProgressDialog) -> None:
-        if self._mosaic_progress_dialog is dialog:
-            self._mosaic_progress_dialog = None
+    def request_cancel_mosaic(self) -> None:
+        """Audit and asynchronously stop the active mosaic."""
+        if self._mosaic_logger is not None:
+            self._mosaic_logger.log("MOSAIC_CANCEL_REQUESTED", {})
+        self._run("Cancel mosaic", self.service.stop_mosaic)
 
     def edit_configuration(self) -> None:
         # The dialog owns file validation; this method applies only accepted profiles.
@@ -536,6 +548,15 @@ class MainWindow(QMainWindow):
         self.app_status_bar.clearMessage()
         self._append_log(f"{description} finished")
         self._refresh_display()
+        # Record every completed operation in controller-home coordinates.
+        values = [
+            "unknown" if value is None else f"{value:.4f}"
+            for value in self.service.pose.as_vector()
+        ]
+        self._append_log(
+            "Controller-home position: "
+            f"[x={values[0]}, y={values[1]}, z={values[2]}, theta={values[3]}]"
+        )
 
     def _poll(self) -> None:
         # Skip timer ticks while an earlier poll is still running to prevent a backlog.
@@ -560,10 +581,14 @@ class MainWindow(QMainWindow):
 
     def _refresh_display(self) -> None:
         for axis, panel in self.panels.items():
-            panel.update_status(self.service.axes[axis].status())
+            panel.update_status(self.service.component_status(axis))
+            # Connected adapters replace profile placeholders with live device limits.
+            with suppress(Exception):
+                panel.apply_limits(self.service.axis_limits(axis))
         for direction, digital_panel in self.digital_panels.items():
             digital_panel.update_status(self.digital_service.status(direction))
         self._show_pose(self.service.pose)
+        self.axis_mosaic_view.update_pose(self.service.pose)
 
     def _show_pose(self, pose: Pose) -> None:
         values = ["—" if value is None else f"{value:.4f}" for value in pose.as_vector()]

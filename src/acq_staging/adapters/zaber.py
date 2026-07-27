@@ -21,6 +21,7 @@ from acq_staging.models import (
     AxisName,
     ComponentIdentity,
     ComponentStatus,
+    LimitsConfig,
 )
 
 
@@ -143,7 +144,7 @@ class ZaberLinearStage:
                     f"{self.axis_name.value}: expected model "
                     f"{self.config.expected_model}, got {model}"
                 )
-            # Device-reported limits bound the stricter application software limits.
+            # Read authoritative travel limits from the connected axis settings.
             device_minimum = float(
                 axis.settings.get("limit.min", Units.LENGTH_MILLIMETRES)
             )
@@ -154,15 +155,6 @@ class ZaberLinearStage:
                 raise AdapterError(
                     f"{self.axis_name.value}: invalid device limits "
                     f"[{device_minimum}, {device_maximum}] mm"
-                )
-            if (
-                self.config.limits.minimum < device_minimum
-                or self.config.limits.maximum > device_maximum
-            ):
-                raise AdapterError(
-                    f"{self.axis_name.value}: configured limits "
-                    f"[{self.config.limits.minimum}, {self.config.limits.maximum}] mm "
-                    f"exceed device limits [{device_minimum}, {device_maximum}] mm"
                 )
             self._device = device
             self._axis = axis
@@ -258,6 +250,12 @@ class ZaberLinearStage:
         with self.manager.command(self._connection_id):
             return float(self._require_axis().get_position(Units.LENGTH_MILLIMETRES))
 
+    def get_limits(self) -> LimitsConfig:
+        """Return the connected device's internally reported travel limits."""
+        if self._axis is None or self._device_limits is None:
+            raise AdapterError(f"{self.axis_name.value}: limits unavailable while disconnected")
+        return LimitsConfig(*self._device_limits)
+
     @property
     def _connection_id(self) -> str:
         if not self.config.connection_id:
@@ -275,9 +273,9 @@ class ZaberLinearStage:
         return self._device
 
     def _validate_destination(self, destination: float) -> None:
-        if not self.config.limits.contains(destination):
+        if not self.get_limits().contains(destination):
             raise MotionSafetyError(
-                f"{self.axis_name.value}: destination outside software limits"
+                f"{self.axis_name.value}: destination outside device limits"
             )
 
     def _wait_until_idle(self) -> None:

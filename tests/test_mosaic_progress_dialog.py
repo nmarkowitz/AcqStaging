@@ -1,29 +1,150 @@
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QScrollArea
 from pytestqt.qtbot import QtBot
 
 from acq_staging.gui.mosaic_progress_dialog import (
     COMPLETE_COLOR,
     CURRENT_COLOR,
-    PENDING_COLOR,
+    RESUMED_COLOR,
+    MosaicOverview,
     MosaicProgressDialog,
 )
-from acq_staging.models import MosaicProgress, MosaicRunSpec, MosaicTile, MosaicTilePhase
+from acq_staging.models import (
+    AxisName,
+    MosaicProgress,
+    MosaicSequenceSpec,
+    MosaicTile,
+    MosaicTilePhase,
+    MosaicTilingSpec,
+    Pose,
+)
 
 
-def test_mosaic_progress_dialog_colors_current_and_complete_tiles(qtbot: QtBot) -> None:
-    run_spec = MosaicRunSpec.from_tile_counts(1.0, 1.0, 1.0, 3, 2, 2)
-    dialog = MosaicProgressDialog(run_spec)
-    qtbot.addWidget(dialog)
-    assert len(dialog.tiles) == 12
-    assert all(tile.property("tile_color") == PENDING_COLOR for tile in dialog.tiles.values())
+def sequence(resume_tiling: int = 1, resume_tile: int = 1) -> MosaicSequenceSpec:
+    first = MosaicTilingSpec.from_endpoints(1.0, 1.0, 0.0, 0.0, 2.0, 1.0, 5.0, 0.0)
+    second = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 10.0, 10.0, 12.0, 11.0, 6.0, 45.0
+    )
+    return MosaicSequenceSpec(first, second, 20.0, resume_tiling, resume_tile)
 
-    tile = MosaicTile(1.0, 0.0, 0.0, 1, 0, 0)
-    dialog.update_progress(MosaicProgress(2, 12, tile, MosaicTilePhase.CURRENT))
-    label = dialog.tiles[(1, 0, 0)]
-    assert label.property("tile_color") == CURRENT_COLOR
-    assert dialog.status_label.text() == "Running tile 2 of 12"
 
-    dialog.update_progress(MosaicProgress(2, 12, tile, MosaicTilePhase.COMPLETE))
-    assert label.property("tile_color") == COMPLETE_COLOR
-    legend = {label.text() for label in dialog.findChildren(QLabel)}
-    assert {"Pending", "Current", "Complete"} <= legend
+def progress(
+    number: int,
+    phase: MosaicTilePhase,
+    tiling_number: int = 1,
+) -> MosaicProgress:
+    # Match progress coordinates and overall numbering to the selected tiling.
+    offset = 0 if tiling_number == 1 else 6
+    tile = MosaicTile(
+        float(number - 1),
+        0.0,
+        5.0 if tiling_number == 1 else 6.0,
+        0.0 if tiling_number == 1 else 45.0,
+        number - 1,
+        0,
+        tiling_number - 1,
+    )
+    return MosaicProgress(
+        tiling_number,
+        number,
+        6,
+        offset + number,
+        12,
+        tile,
+        phase,
+    )
+
+
+def test_single_view_colors_tiles_and_switches_to_current_tiling(qtbot: QtBot) -> None:
+    view = MosaicProgressDialog(sequence())
+    qtbot.addWidget(view)
+
+    view.update_progress(progress(2, MosaicTilePhase.CURRENT))
+    assert len(view.findChildren(MosaicOverview)) == 1
+    assert view.overview.tile_color((1, 0)) == CURRENT_COLOR
+    assert "Tiling 1" in view.status_label.text()
+
+    view.update_progress(progress(2, MosaicTilePhase.COMPLETE))
+    assert view.overview.tile_color((1, 0)) == COMPLETE_COLOR
+
+    # The same widget is reset to Tiling 2 when its first progress arrives.
+    view.update_progress(progress(1, MosaicTilePhase.CURRENT, tiling_number=2))
+    assert view.overview.spec == sequence().tiling_two
+    assert view.overview.tile_color((0, 0)) == CURRENT_COLOR
+    assert "Tiling 2" in view.tiling_group.title()
+
+
+def test_resume_from_tiling_two_marks_all_prior_work(qtbot: QtBot) -> None:
+    view = MosaicProgressDialog(sequence(resume_tiling=2, resume_tile=2))
+    qtbot.addWidget(view)
+    view.update_pose(Pose(1.0, 2.0, 3.0, 4.0))
+
+    assert view.axis_labels[AxisName.X].text() == "1.0000"
+    assert view.overview.spec == sequence().tiling_two
+    assert view.overview.tile_color((0, 0)) == RESUMED_COLOR
+    assert view.cancel_button.isEnabled()
+
+
+def test_large_tilings_fit_without_scroll_or_child_tiles(qtbot: QtBot) -> None:
+    first = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 0.0, 159.0, 99.0, 5.0, 0.0
+    )
+    second = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 0.0, 159.0, 99.0, 6.0, 45.0
+    )
+    view = MosaicProgressDialog(MosaicSequenceSpec(first, second, 20.0))
+    view.resize(1000, 600)
+    qtbot.addWidget(view)
+    view.show()
+
+    assert view.findChild(QScrollArea) is None
+    assert len(view.findChildren(MosaicOverview)) == 1
+    last = view.overview.tile_rect((159, 99))
+    assert last.width() > 0 and last.height() > 0
+    assert view.overview.rect().contains(last.center().toPoint())
+
+
+def test_overview_paints_completed_and_current_shading(qtbot: QtBot) -> None:
+    view = MosaicProgressDialog(sequence())
+    view.resize(900, 550)
+    qtbot.addWidget(view)
+    view.show()
+    view.update_progress(progress(1, MosaicTilePhase.COMPLETE))
+    view.update_progress(progress(2, MosaicTilePhase.ACQUIRING))
+    image = view.overview.grab().toImage()
+    complete = QColor(image.pixel(view.overview.tile_rect((0, 0)).center().toPoint()))
+    current = QColor(image.pixel(view.overview.tile_rect((1, 0)).center().toPoint()))
+
+    assert complete.name() == COMPLETE_COLOR
+    assert current.name() == CURRENT_COLOR
+
+
+def test_timing_appears_after_two_completed_tiles_and_updates(qtbot: QtBot) -> None:
+    now = [0.0]
+    view = MosaicProgressDialog(sequence(), clock=lambda: now[0])
+    qtbot.addWidget(view)
+
+    # Start timing on the first active tile but keep both labels hidden.
+    view.update_progress(progress(1, MosaicTilePhase.CURRENT))
+    now[0] = 4.0
+    view.update_progress(progress(1, MosaicTilePhase.COMPLETE))
+    assert view.elapsed_label.isHidden()
+    assert view.remaining_label.isHidden()
+
+    # Two completed acquisitions provide the first average-duration estimate.
+    now[0] = 10.0
+    view.update_progress(progress(2, MosaicTilePhase.COMPLETE))
+    assert not view.elapsed_label.isHidden()
+    assert view.elapsed_label.text() == "Elapsed: 00:00:10"
+    assert view.remaining_label.text() == "Estimated remaining: 00:00:20"
+
+    # Each later completed tile refreshes both elapsed and remaining values.
+    now[0] = 15.0
+    view.update_progress(progress(3, MosaicTilePhase.COMPLETE))
+    assert view.elapsed_label.text() == "Elapsed: 00:00:15"
+    assert view.remaining_label.text() == "Estimated remaining: 00:00:15"
+
+    # Automatic transition resets estimates until two Tiling 2 tiles complete.
+    view.update_progress(progress(1, MosaicTilePhase.CURRENT, tiling_number=2))
+    assert view.elapsed_label.isHidden()
+    assert view.remaining_label.isHidden()

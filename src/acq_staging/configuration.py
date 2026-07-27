@@ -18,25 +18,12 @@ from acq_staging.models import (
     DigitalAdapterType,
     DigitalDirection,
 )
+from acq_staging.models import (
+    LimitsConfig as LimitsConfig,
+)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 DUMMY_ACQUIRER_SCHEMA_VERSION = 1
-
-
-@dataclass(frozen=True, slots=True)
-class LimitsConfig:
-    """Software travel limits."""
-
-    minimum: float
-    maximum: float
-
-    def validate(self, field: str) -> None:
-        if self.minimum >= self.maximum:
-            raise ConfigurationError(f"{field}: minimum must be less than maximum")
-
-    def contains(self, value: float) -> bool:
-        """Return whether a position lies inside the configured limits."""
-        return self.minimum <= value <= self.maximum
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +37,13 @@ class MotionConfig:
     position_tolerance: float
     operation_timeout_s: float
 
-    def validate(self, field: str, travel: float) -> None:
+    def validate(self, field: str, travel: float | None) -> None:
         values = asdict(self)
         for name, value in values.items():
             if value <= 0:
                 raise ConfigurationError(f"{field}.{name}: must be positive")
-        if self.test_distance > travel:
+        # Simulators have profile-defined travel; hardware travel is queried on connect.
+        if travel is not None and self.test_distance > travel:
             raise ConfigurationError(f"{field}.test_distance: exceeds configured travel")
 
 
@@ -79,7 +67,7 @@ class ComponentConfig:
 
     enabled: bool
     adapter: AdapterType
-    limits: LimitsConfig
+    limits: LimitsConfig | None
     motion: MotionConfig
     connection_id: str | None = None
     serial_number: str | None = None
@@ -98,11 +86,16 @@ class ComponentConfig:
         connections: dict[str, ZaberConnectionConfig],
     ) -> None:
         field = f"components.{axis.value}"
-        # Validate shared safety limits before checking adapter-specific fields.
-        self.limits.validate(f"{field}.limits")
-        self.motion.validate(f"{field}.motion", self.limits.maximum - self.limits.minimum)
-        if not self.limits.contains(self.simulation_start):
-            raise ConfigurationError(f"{field}.simulation_start: outside configured limits")
+        # Only simulators define travel in a profile; hardware adapters query the device API.
+        if self.adapter is AdapterType.SIMULATED:
+            if self.limits is None:
+                raise ConfigurationError(f"{field}.limits: required for simulation")
+            self.limits.validate(f"{field}.limits")
+            self.motion.validate(f"{field}.motion", self.limits.span)
+            if not self.limits.contains(self.simulation_start):
+                raise ConfigurationError(f"{field}.simulation_start: outside configured limits")
+        else:
+            self.motion.validate(f"{field}.motion", None)
         if self.polling_interval_ms <= 0:
             raise ConfigurationError(f"{field}.polling_interval_ms: must be positive")
         if self.simulation_latency_s < 0:
@@ -152,31 +145,18 @@ class UiConfig:
 
 @dataclass(frozen=True, slots=True)
 class MosaicConfig:
-    """Serpentine mosaic geometry and movement timing parameters."""
+    """Default XY spacing and full-sequence movement timing parameters."""
 
     step_x_mm: float
     step_y_mm: float
-    step_z_mm: float
-    tiles_x: int
-    tiles_y: int
-    tiles_z: int
     settling_time_s: float = 2.0
     dwell_time_s: float = 0.0
     operation_timeout_s: float = 3600.0
 
     def validate(self) -> None:
-        for axis, step in (("x", self.step_x_mm), ("y", self.step_y_mm), ("z", self.step_z_mm)):
-            if step < 0:
-                raise ConfigurationError(f"mosaic.step_{axis}_mm: must not be negative")
-        for axis, count in (("x", self.tiles_x), ("y", self.tiles_y), ("z", self.tiles_z)):
-            if count <= 0:
-                raise ConfigurationError(f"mosaic.tiles_{axis}: must be positive")
-        if self.tiles_x > 1 and self.step_x_mm == 0:
-            raise ConfigurationError("mosaic.step_x_mm: must be positive for multiple tiles")
-        if self.tiles_y > 1 and self.step_y_mm == 0:
-            raise ConfigurationError("mosaic.step_y_mm: must be positive for multiple tiles")
-        if self.tiles_z > 1 and self.step_z_mm == 0:
-            raise ConfigurationError("mosaic.step_z_mm: must be positive for multiple tiles")
+        # XY defaults must be usable when the setup dialog starts with distinct endpoints.
+        if self.step_x_mm <= 0 or self.step_y_mm <= 0:
+            raise ConfigurationError("mosaic X and Y steps must be positive")
         if self.settling_time_s < 0 or self.dwell_time_s < 0:
             raise ConfigurationError("mosaic settling and dwell times must not be negative")
         if self.operation_timeout_s <= 0:
@@ -410,7 +390,12 @@ def _parse_component(raw: object, field: str) -> ComponentConfig:
     # Construct nested typed records before passing the remaining flat fields through.
     data = _mapping(raw, field)
     try:
-        limits = LimitsConfig(**_mapping(data["limits"], f"{field}.limits"))
+        limits_data = data.get("limits")
+        limits = (
+            None
+            if limits_data is None
+            else LimitsConfig(**_mapping(limits_data, f"{field}.limits"))
+        )
         motion = MotionConfig(**_mapping(data["motion"], f"{field}.motion"))
         remaining = {key: value for key, value in data.items() if key not in {"limits", "motion"}}
         remaining["adapter"] = AdapterType(remaining["adapter"])
@@ -466,8 +451,21 @@ def config_from_dict(raw: object) -> AppConfig:
     data = deepcopy(_mapping(raw, "configuration"))
     # Upgrade schema-3 profiles in memory without changing the source file.
     if data.get("schema_version") == 3:
-        data["schema_version"] = SCHEMA_VERSION
+        data["schema_version"] = 4
         data["acquisition_handshake"] = asdict(AcquisitionHandshakeConfig())
+    # Schema 5 removes user-authored travel limits from physical hardware entries.
+    if data.get("schema_version") == 4:
+        data["schema_version"] = 5
+        for component in _mapping(data.get("components", {}), "components").values():
+            component_data = _mapping(component, "components entry")
+            if component_data.get("adapter") != AdapterType.SIMULATED.value:
+                component_data["limits"] = None
+    # Schema 6 replaces XYZ count defaults with two transient endpoint-defined XY tilings.
+    if data.get("schema_version") == 5:
+        data["schema_version"] = SCHEMA_VERSION
+        mosaic = _mapping(data.get("mosaic", {}), "mosaic")
+        for obsolete in ("step_z_mm", "tiles_x", "tiles_y", "tiles_z"):
+            mosaic.pop(obsolete, None)
     # Convert external strings and mappings into the application's typed model.
     try:
         connections = {
@@ -615,7 +613,7 @@ def default_simulation_config() -> AppConfig:
             ),
         },
         ui=UiConfig(),
-        mosaic=MosaicConfig(2.8, 2.8, 0.001, 7, 5, 1, 2.0, 0.0, 3600.0),
+        mosaic=MosaicConfig(2.8, 2.8, 2.0, 0.0, 3600.0),
         digital_io={
             DigitalDirection.INPUT: DigitalIOConfig(
                 True, DigitalAdapterType.SIMULATED, "SimDAQ", "P0", 8

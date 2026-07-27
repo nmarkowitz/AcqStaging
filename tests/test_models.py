@@ -1,6 +1,18 @@
 import pytest
 
-from acq_staging.models import HOME_ORDER, AxisName, MosaicInputMode, MosaicRunSpec, Pose
+from acq_staging.models import (
+    HOME_ORDER,
+    AxisName,
+    MosaicSequenceSpec,
+    MosaicTilingSpec,
+    Pose,
+)
+
+
+def tiling(rotation: float = 0.0) -> MosaicTilingSpec:
+    return MosaicTilingSpec.from_endpoints(
+        1.0, 2.0, 3.0, -2.0, 1.0, 2.0, 5.0, rotation
+    )
 
 
 def test_home_order_is_required_sequence() -> None:
@@ -11,44 +23,35 @@ def test_pose_vector_order() -> None:
     assert Pose(1.0, 2.0, 3.0, 4.0).as_vector() == (1.0, 2.0, 3.0, 4.0)
 
 
-def test_count_mosaic_uses_positive_steps_from_an_observed_origin() -> None:
-    spec = MosaicRunSpec.from_tile_counts(1.0, 2.0, 0.0, 3, 2, 1)
+def test_xy_tiling_infers_direction_and_holds_z_and_rotation() -> None:
+    spec = tiling(35.0)
 
-    assert spec.input_mode is MosaicInputMode.TILE_COUNTS
-    assert spec.total_tiles == 6
-    assert spec.extents_mm == (2.0, 2.0, 0.0)
-    assert spec.coordinate(0, 2, 10.0) == 12.0
+    assert spec.tile_counts == (3, 3)
+    assert spec.extents_mm == (-2.0, 4.0)
+    assert spec.z_mm == 5.0
+    assert spec.rotation_deg == 35.0
+    assert [spec.coordinate(0, index) for index in range(3)] == [3.0, 2.0, 1.0]
 
 
-def test_endpoint_mosaic_infers_direction_and_includes_both_ends() -> None:
-    spec = MosaicRunSpec.from_endpoints(
-        1.0,
-        2.0,
-        0.5,
-        3.0,
-        -2.0,
-        5.0,
-        1.0,
-        2.0,
-        5.0,
+def test_xy_tiling_rounds_partial_endpoint_outward() -> None:
+    spec = MosaicTilingSpec.from_endpoints(
+        0.3, 1.0, 0.0, 0.0, 1.0, 0.0, 4.0, 0.0
     )
 
-    assert spec.tile_counts == (3, 3, 1)
-    assert spec.extents_mm == (-2.0, 4.0, 0.0)
-    assert [spec.coordinate(0, index, 99.0) for index in range(3)] == [3.0, 2.0, 1.0]
-    assert spec.coordinate(1, 2, 99.0) == 2.0
+    assert spec.tiles_x == 5
+    assert spec.end_x_mm == pytest.approx(1.2)
 
 
-def test_endpoint_mosaic_rejects_a_partial_final_step() -> None:
-    with pytest.raises(ValueError, match="exact multiple"):
-        MosaicRunSpec.from_endpoints(
-            0.3,
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-        )
+def test_xy_tiling_requires_positive_steps_even_for_single_tile() -> None:
+    with pytest.raises(ValueError, match="X step"):
+        MosaicTilingSpec.from_endpoints(0.0, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 0.0)
+
+
+def test_sequence_requires_zero_degree_first_tiling() -> None:
+    with pytest.raises(ValueError, match="tiling 1 rotation"):
+        MosaicSequenceSpec(tiling(10.0), tiling(45.0), 20.0)
+
+
+def test_sequence_resume_tile_must_fit_selected_tiling() -> None:
+    with pytest.raises(ValueError, match="between 1 and 9"):
+        MosaicSequenceSpec(tiling(), tiling(45.0), 20.0, resume_tiling=2, resume_tile=10)

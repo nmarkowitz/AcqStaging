@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "profile_name": "Hardware Example - Replace Every Placeholder",
   "connections": {
     "zaber-main": {
@@ -11,10 +11,7 @@
     "x": {
       "enabled": true,
       "adapter": "zaber_ascii",
-      "limits": {
-        "minimum": 0.0,
-        "maximum": 300.0
-      },
+      "limits": null,
       "motion": {
         "velocity": 10.0,
         "acceleration": 50.0,
@@ -37,10 +34,7 @@
     "y": {
       "enabled": true,
       "adapter": "zaber_ascii",
-      "limits": {
-        "minimum": 0.0,
-        "maximum": 300.0
-      },
+      "limits": null,
       "motion": {
         "velocity": 10.0,
         "acceleration": 50.0,
@@ -63,10 +57,7 @@
     "z": {
       "enabled": true,
       "adapter": "zaber_ascii",
-      "limits": {
-        "minimum": 0.0,
-        "maximum": 100.0
-      },
+      "limits": null,
       "motion": {
         "velocity": 5.0,
         "acceleration": 25.0,
@@ -89,10 +80,7 @@
     "rotation": {
       "enabled": true,
       "adapter": "thorlabs_bsc101",
-      "limits": {
-        "minimum": 0.0,
-        "maximum": 360.0
-      },
+      "limits": null,
       "motion": {
         "velocity": 10.0,
         "acceleration": 20.0,
@@ -121,10 +109,6 @@
   "mosaic": {
     "step_x_mm": 2.8,
     "step_y_mm": 2.8,
-    "step_z_mm": 0.001,
-    "tiles_x": 7,
-    "tiles_y": 5,
-    "tiles_z": 1,
     "settling_time_s": 2.0,
     "dwell_time_s": 0.0,
     "operation_timeout_s": 3600.0
@@ -135,16 +119,9 @@
       "adapter": "nidaqmx",
       "device": "Dev2",
       "port": "P0",
-      "line_count": 8,
+      "line_count": 1,
       "lines": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7
+        0
       ],
       "operation_timeout_s": 10.0,
       "polling_interval_ms": 250
@@ -154,12 +131,9 @@
       "adapter": "nidaqmx",
       "device": "Dev1",
       "port": "P1",
-      "line_count": 8,
+      "line_count": 1,
       "lines": [
-        0,
-        1,
-        2,
-        3
+        0
       ],
       "operation_timeout_s": 10.0,
       "polling_interval_ms": 250

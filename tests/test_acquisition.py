@@ -38,7 +38,7 @@ def make_enabled_movement_services() -> tuple[
     base = default_simulation_config()
     config = replace(
         base,
-        mosaic=MosaicConfig(1.0, 1.0, 0.0, 1, 1, 1, 0.0, 0.0, 5.0),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 5.0),
         acquisition_handshake=AcquisitionHandshakeConfig(
             True,
             0,
@@ -69,28 +69,34 @@ def test_mosaic_waits_for_complete_and_resets_both_lines() -> None:
 
     # The peer holds Done HIGH until movement acknowledges by lowering Ready.
     def respond() -> None:
-        wait_until(lambda: digital.status(DigitalDirection.OUTPUT).states[0] is True)
-        input_device.set_simulated_inputs(
-            {line: line == 0 for line in input_device.config.selected_lines}
-        )
-        wait_until(lambda: digital.status(DigitalDirection.OUTPUT).states[0] is False)
-        input_device.set_simulated_inputs(
-            {line: False for line in input_device.config.selected_lines}
-        )
+        # One acquisition request is completed for each of the two one-tile tilings.
+        for _request in range(2):
+            wait_until(lambda: digital.status(DigitalDirection.OUTPUT).states[0] is True)
+            input_device.set_simulated_inputs(
+                {line: line == 0 for line in input_device.config.selected_lines}
+            )
+            wait_until(lambda: digital.status(DigitalDirection.OUTPUT).states[0] is False)
+            input_device.set_simulated_inputs(
+                {line: False for line in input_device.config.selected_lines}
+            )
 
     peer = threading.Thread(target=respond)
     peer.start()
     events: list[str] = []
     progress: list[MosaicProgress] = []
-    motion.run_mosaic(
+    motion.run_mosaic_sequence(
+        motion.default_mosaic_sequence_spec(),
         progress.append,
-        on_event=lambda event, _details: events.append(event),
+        lambda event, _details: events.append(event),
     )
     peer.join(timeout=1.0)
 
     assert not peer.is_alive()
     assert digital.status(DigitalDirection.OUTPUT).states[0] is False
     assert [item.phase for item in progress] == [
+        MosaicTilePhase.CURRENT,
+        MosaicTilePhase.ACQUIRING,
+        MosaicTilePhase.COMPLETE,
         MosaicTilePhase.CURRENT,
         MosaicTilePhase.ACQUIRING,
         MosaicTilePhase.COMPLETE,
@@ -104,7 +110,7 @@ def test_handshake_preflight_rejects_unknown_output_before_motion() -> None:
     base = default_simulation_config()
     config = replace(
         base,
-        mosaic=MosaicConfig(1.0, 1.0, 0.0, 2, 1, 1, 0.0, 0.0, 5.0),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 5.0),
         acquisition_handshake=replace(base.acquisition_handshake, enabled=True),
     )
     devices = build_digital_devices(config)
@@ -120,7 +126,7 @@ def test_handshake_preflight_rejects_unknown_output_before_motion() -> None:
     motion.home_all()
 
     with pytest.raises(MotionSafetyError, match="initialized LOW"):
-        motion.run_mosaic()
+        motion.run_mosaic_sequence(motion.default_mosaic_sequence_spec())
 
     assert motion.axes[AxisName.X].get_position() == 0.0
 
@@ -135,7 +141,7 @@ def test_acquisition_timeout_returns_ready_low_and_prevents_next_tile() -> None:
     motion.acquisition_handshake = handshake
 
     with pytest.raises(Exception, match="timed out waiting for acquisition completion"):
-        motion.run_mosaic()
+        motion.run_mosaic_sequence(motion.default_mosaic_sequence_spec())
 
     assert digital.status(DigitalDirection.OUTPUT).states[0] is False
 

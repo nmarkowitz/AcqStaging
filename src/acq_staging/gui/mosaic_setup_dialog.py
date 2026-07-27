@@ -1,9 +1,11 @@
-"""Per-run mosaic geometry editor."""
+"""User-friendly editor for one two-tiling mosaic sequence."""
 
 from __future__ import annotations
 
+from math import isclose
+
 from PyQt6.QtWidgets import (
-    QButtonGroup,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -11,226 +13,307 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from acq_staging.configuration import ComponentConfig, MosaicConfig
-from acq_staging.models import AxisName, MosaicInputMode, MosaicRunSpec, Pose
-
-LINEAR_AXES = (AxisName.X, AxisName.Y, AxisName.Z)
+from acq_staging.models import (
+    AxisName,
+    LimitsConfig,
+    MosaicSequenceSpec,
+    MosaicTilingSpec,
+    Pose,
+)
 
 
 class MosaicSetupDialog(QDialog):
-    """Collect and validate transient geometry before mosaic confirmation."""
+    """Collect two independent endpoint-defined XY tilings for one full run."""
 
     def __init__(
         self,
         mosaic: MosaicConfig,
         components: dict[AxisName, ComponentConfig],
         current_pose: Pose,
+        axis_limits: dict[AxisName, LimitsConfig] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Set Up Mosaic Run")
+        self.setWindowTitle("Set Up Two-Tiling Mosaic Run")
         self.setModal(True)
-        self.validated_spec: MosaicRunSpec | None = None
+        self.resize(1050, 620)
+        self.validated_spec: MosaicSequenceSpec | None = None
+        supplied_limits = axis_limits or {}
 
-        # The mode choice makes inactive geometry fields visibly unavailable.
-        self.count_mode = QRadioButton("Number of tiles")
-        self.count_mode.setObjectName("mosaic_mode_tile_counts")
-        self.endpoint_mode = QRadioButton("Beginning and end points")
-        self.endpoint_mode.setObjectName("mosaic_mode_endpoints")
-        modes = QButtonGroup(self)
-        modes.addButton(self.count_mode)
-        modes.addButton(self.endpoint_mode)
-        self.count_mode.setChecked(True)
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(self.count_mode)
-        mode_layout.addWidget(self.endpoint_mode)
-        mode_layout.addStretch()
-
-        # Step magnitudes are copied from the profile but remain transient edits.
-        self.step_boxes: dict[AxisName, QDoubleSpinBox] = {}
-        step_group = QGroupBox("Step sizes (mm, this run only)")
-        step_form = QFormLayout(step_group)
-        profile_steps = (mosaic.step_x_mm, mosaic.step_y_mm, mosaic.step_z_mm)
-        for axis, value in zip(LINEAR_AXES, profile_steps, strict=True):
-            step_box = QDoubleSpinBox()
-            step_box.setObjectName(f"mosaic_step_{axis.value}_mm")
-            step_box.setDecimals(6)
-            travel = components[axis].limits.maximum - components[axis].limits.minimum
-            step_box.setRange(0.0, max(travel, value))
-            step_box.setSingleStep(0.001)
-            step_box.setValue(value)
-            step_box.setSuffix(" mm")
-            self.step_boxes[axis] = step_box
-            step_form.addRow(axis.value.upper(), step_box)
-
-        # Count mode preserves the profile's current XYZ counts as editable defaults.
-        self.count_boxes: dict[AxisName, QSpinBox] = {}
-        self.count_group = QGroupBox("Tile counts")
-        count_form = QFormLayout(self.count_group)
-        profile_counts = (mosaic.tiles_x, mosaic.tiles_y, mosaic.tiles_z)
-        for axis, value in zip(LINEAR_AXES, profile_counts, strict=True):
-            count_box = QSpinBox()
-            count_box.setObjectName(f"mosaic_tiles_{axis.value}")
-            count_box.setRange(1, 2_147_483_647)
-            count_box.setValue(value)
-            self.count_boxes[axis] = count_box
-            count_form.addRow(axis.value.upper(), count_box)
-
-        # Endpoint defaults describe the equivalent profile-sized grid from the current pose.
-        self.begin_boxes: dict[AxisName, QDoubleSpinBox] = {}
-        self.end_boxes: dict[AxisName, QDoubleSpinBox] = {}
-        self.endpoint_group = QGroupBox("Absolute beginning and end points (mm)")
-        endpoint_form = QFormLayout(self.endpoint_group)
-        observed = current_pose.as_vector()[:3]
-        for axis, position, step, count in zip(
-            LINEAR_AXES,
-            observed,
-            profile_steps,
-            profile_counts,
-            strict=True,
-        ):
-            beginning = (
-                position if position is not None else components[axis].simulation_start
+        # Connected axes supply API limits; simulator ranges remain a safe offline fallback.
+        self.limits = {
+            axis: supplied_limits.get(
+                axis,
+                components[axis].limits or LimitsConfig(-1_000_000.0, 1_000_000.0),
             )
-            begin_box = self._coordinate_box(axis, "begin", components[axis])
-            end_box = self._coordinate_box(axis, "end", components[axis])
-            begin_box.setValue(beginning)
-            end_box.setValue(beginning + (count - 1) * step)
-            self.begin_boxes[axis] = begin_box
-            self.end_boxes[axis] = end_box
-            row = QHBoxLayout()
-            row.addWidget(QLabel("Begin"))
-            row.addWidget(begin_box)
-            row.addWidget(QLabel("End"))
-            row.addWidget(end_box)
-            endpoint_form.addRow(axis.value.upper(), row)
+            for axis in (AxisName.X, AxisName.Y, AxisName.Z, AxisName.ROTATION)
+        }
+        pose_values = current_pose.as_vector()
 
-        # Live validation exposes derived counts before the operator reviews motion.
-        self.summary = QLabel()
-        self.summary.setObjectName("mosaic_geometry_summary")
-        self.summary.setWordWrap(True)
+        def observed(index: int, axis: AxisName) -> float:
+            value = pose_values[index]
+            return components[axis].simulation_start if value is None else value
+
+        self.current = {
+            axis: observed(index, axis)
+            for index, axis in enumerate(
+                (AxisName.X, AxisName.Y, AxisName.Z, AxisName.ROTATION)
+            )
+        }
+
+        # Matching side-by-side cards make differences between both tilings easy to review.
+        self.fields: list[dict[str, QDoubleSpinBox]] = []
+        self.summaries: list[QLabel] = []
+        tilings_layout = QHBoxLayout()
+        for tiling_number in (1, 2):
+            group = self._build_tiling_group(tiling_number, mosaic)
+            tilings_layout.addWidget(group)
+
+        # Safe Z and resume controls apply to the complete automatic sequence.
+        run_group = QGroupBox("Full-run controls")
+        run_form = QFormLayout(run_group)
+        self.safe_z_box = self._position_box(
+            "safe_transition_z_mm", self.limits[AxisName.Z], " mm"
+        )
+        self.safe_z_box.setValue(self.current[AxisName.Z])
+        self.safe_z_box.setToolTip(
+            "Z position reached before any required rotation change. Verify collision safety."
+        )
+        self.resume_tiling = QComboBox()
+        self.resume_tiling.setObjectName("resume_tiling")
+        self.resume_tiling.addItems(("Tiling 1", "Tiling 2"))
+        self.resume_tile = QSpinBox()
+        self.resume_tile.setObjectName("resume_tile")
+        self.resume_tile.setRange(1, 1)
+        run_form.addRow("Safe rotation-transition Z", self.safe_z_box)
+        run_form.addRow("Resume from", self.resume_tiling)
+        run_form.addRow("Start/resume tile", self.resume_tile)
+
+        self.sequence_summary = QLabel()
+        self.sequence_summary.setObjectName("mosaic_sequence_summary")
+        self.sequence_summary.setWordWrap(True)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         review = buttons.button(QDialogButtonBox.StandardButton.Ok)
         if review is not None:
-            review.setText("Review Motion")
+            review.setText("Review Full Motion")
         buttons.accepted.connect(self._accept_valid_geometry)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Choose how to define this run. Step edits apply only to this mosaic "
-                "and do not change the saved configuration profile."
+                "Configure both XY tilings together. Tiling 2 starts automatically only "
+                "after Tiling 1 completes successfully. All positions use controller home."
             )
         )
-        layout.addLayout(mode_layout)
-        layout.addWidget(step_group)
-        layout.addWidget(self.count_group)
-        layout.addWidget(self.endpoint_group)
-        layout.addWidget(self.summary)
+        layout.addLayout(tilings_layout)
+        layout.addWidget(run_group)
+        layout.addWidget(self.sequence_summary)
         layout.addWidget(buttons)
 
-        # Every geometry edit immediately refreshes the derived grid summary.
-        self.count_mode.toggled.connect(self._update_mode)
-        self.endpoint_mode.toggled.connect(self._update_mode)
-        coordinate_boxes = (
-            *self.step_boxes.values(),
-            *self.begin_boxes.values(),
-            *self.end_boxes.values(),
+        # Value changes preview geometry while editingFinished commits rounded stop fields.
+        geometry_keys = (
+            "start_x",
+            "stop_x",
+            "step_x",
+            "start_y",
+            "stop_y",
+            "step_y",
         )
-        for coordinate_box in coordinate_boxes:
-            coordinate_box.valueChanged.connect(self._update_summary)
-        for count_box in self.count_boxes.values():
-            count_box.valueChanged.connect(self._update_summary)
-        self._update_mode()
+        for index, fields in enumerate(self.fields):
+            for box in fields.values():
+                box.valueChanged.connect(self._update_summary)
+            for key in geometry_keys:
+                fields[key].editingFinished.connect(
+                    lambda tiling_index=index: self._normalize_stop_fields(tiling_index)
+                )
+        self.safe_z_box.valueChanged.connect(self._update_summary)
+        self.resume_tiling.currentIndexChanged.connect(self._update_summary)
+        self.resume_tile.valueChanged.connect(self._update_summary)
+        self._update_summary()
 
-    @property
-    def input_mode(self) -> MosaicInputMode:
-        """Return the currently selected geometry mode."""
-        return (
-            MosaicInputMode.TILE_COUNTS
-            if self.count_mode.isChecked()
-            else MosaicInputMode.ENDPOINTS
+    def build_spec(self) -> MosaicSequenceSpec:
+        """Build the validated full sequence currently displayed by the dialog."""
+        tilings = (self._build_tiling(0), self._build_tiling(1))
+        # Outward rounding can pass a limit even though the entered stop was in range.
+        for tiling_number, tiling in enumerate(tilings, start=1):
+            for axis, ending in zip(
+                (AxisName.X, AxisName.Y), tiling.ending, strict=True
+            ):
+                if not self.limits[axis].contains(ending):
+                    raise ValueError(
+                        f"Tiling {tiling_number} rounded {axis.value.upper()} stop "
+                        f"{ending} is outside device limits"
+                    )
+        return MosaicSequenceSpec(
+            tilings[0],
+            tilings[1],
+            self.safe_z_box.value(),
+            self.resume_tiling.currentIndex() + 1,
+            self.resume_tile.value(),
         )
 
-    def build_spec(self) -> MosaicRunSpec:
-        """Build validated geometry from the currently displayed values."""
-        steps = tuple(self.step_boxes[axis].value() for axis in LINEAR_AXES)
-        if self.input_mode is MosaicInputMode.TILE_COUNTS:
-            counts = tuple(self.count_boxes[axis].value() for axis in LINEAR_AXES)
-            return MosaicRunSpec.from_tile_counts(
-                steps[0],
-                steps[1],
-                steps[2],
-                counts[0],
-                counts[1],
-                counts[2],
+    def _build_tiling_group(self, tiling_number: int, mosaic: MosaicConfig) -> QGroupBox:
+        """Create one consistently ordered tiling card and retain its editors."""
+        group = QGroupBox(
+            "Tiling 1 — Rotation fixed at 0°"
+            if tiling_number == 1
+            else "Tiling 2 — User rotation"
+        )
+        form = QFormLayout(group)
+        fields: dict[str, QDoubleSpinBox] = {}
+
+        # X and Y each expose start, stop, and unchanged step magnitude.
+        for axis in (AxisName.X, AxisName.Y):
+            for role in ("start", "stop"):
+                key = f"{role}_{axis.value}"
+                box = self._position_box(
+                    f"tiling_{tiling_number}_{key}_mm", self.limits[axis], " mm"
+                )
+                box.setValue(self.current[axis])
+                fields[key] = box
+                form.addRow(f"{axis.value.upper()} {role}", box)
+            step = QDoubleSpinBox()
+            step.setObjectName(f"tiling_{tiling_number}_step_{axis.value}_mm")
+            step.setDecimals(6)
+            step.setRange(0.000001, self.limits[axis].span)
+            step.setValue(
+                mosaic.step_x_mm if axis is AxisName.X else mosaic.step_y_mm
             )
+            step.setSuffix(" mm")
+            fields[f"step_{axis.value}"] = step
+            form.addRow(f"{axis.value.upper()} step", step)
 
-        # Endpoint construction derives and validates inclusive tile counts.
-        beginning = tuple(self.begin_boxes[axis].value() for axis in LINEAR_AXES)
-        ending = tuple(self.end_boxes[axis].value() for axis in LINEAR_AXES)
-        return MosaicRunSpec.from_endpoints(
-            steps[0],
-            steps[1],
-            steps[2],
-            beginning[0],
-            beginning[1],
-            beginning[2],
-            ending[0],
-            ending[1],
-            ending[2],
+        # Each tiling owns one fixed Z and one fixed rotation target.
+        z_box = self._position_box(
+            f"tiling_{tiling_number}_z_mm", self.limits[AxisName.Z], " mm"
+        )
+        z_box.setValue(self.current[AxisName.Z])
+        rotation = self._position_box(
+            f"tiling_{tiling_number}_rotation_deg",
+            self.limits[AxisName.ROTATION],
+            "°",
+        )
+        rotation.setValue(0.0 if tiling_number == 1 else self.current[AxisName.ROTATION])
+        rotation.setEnabled(tiling_number == 2)
+        fields["z"] = z_box
+        fields["rotation"] = rotation
+        form.addRow("Fixed Z", z_box)
+        form.addRow("Rotation", rotation)
+
+        summary = QLabel()
+        summary.setObjectName(f"tiling_{tiling_number}_summary")
+        summary.setWordWrap(True)
+        form.addRow("Resolved geometry", summary)
+        self.fields.append(fields)
+        self.summaries.append(summary)
+        return group
+
+    def _build_tiling(self, index: int) -> MosaicTilingSpec:
+        """Normalize one card into endpoint geometry with outward rounding."""
+        fields = self.fields[index]
+        return MosaicTilingSpec.from_endpoints(
+            fields["step_x"].value(),
+            fields["step_y"].value(),
+            fields["start_x"].value(),
+            fields["start_y"].value(),
+            fields["stop_x"].value(),
+            fields["stop_y"].value(),
+            fields["z"].value(),
+            0.0 if index == 0 else fields["rotation"].value(),
         )
 
     @staticmethod
-    def _coordinate_box(
-        axis: AxisName,
-        role: str,
-        component: ComponentConfig,
-    ) -> QDoubleSpinBox:
-        """Create one absolute coordinate editor bounded by software limits."""
+    def _position_box(name: str, limits: LimitsConfig, suffix: str) -> QDoubleSpinBox:
+        """Create one controller-home coordinate editor bounded by live limits."""
         box = QDoubleSpinBox()
-        box.setObjectName(f"mosaic_{role}_{axis.value}_mm")
+        box.setObjectName(name)
         box.setDecimals(6)
-        box.setRange(component.limits.minimum, component.limits.maximum)
+        box.setRange(limits.minimum, limits.maximum)
         box.setSingleStep(0.001)
-        box.setSuffix(" mm")
+        box.setSuffix(suffix)
         return box
 
-    def _update_mode(self) -> None:
-        # Only the fields owned by the selected input mode remain interactive.
-        self.count_group.setEnabled(self.input_mode is MosaicInputMode.TILE_COUNTS)
-        self.endpoint_group.setEnabled(self.input_mode is MosaicInputMode.ENDPOINTS)
-        self._update_summary()
-
     def _update_summary(self) -> None:
-        # Invalid endpoint spacing stays visible without closing the setup dialog.
+        """Refresh normalized geometry and keep resume tile inside the selected tiling."""
+        try:
+            tilings = (self._build_tiling(0), self._build_tiling(1))
+        except ValueError as exc:
+            self.sequence_summary.setStyleSheet("color: #b00020;")
+            self.sequence_summary.setText(f"Invalid geometry: {exc}")
+            return
+
+        # Each card exposes adjusted endpoints so outward rounding is never hidden.
+        for index, tiling in enumerate(tilings):
+            requested = (
+                self.fields[index]["stop_x"].value(),
+                self.fields[index]["stop_y"].value(),
+            )
+            adjustment = (
+                f"; requested stop rounded outward to {tiling.ending}"
+                if requested != tiling.ending
+                else ""
+            )
+            self.summaries[index].setText(
+                f"{tiling.tiles_x} x {tiling.tiles_y} = {tiling.total_tiles} tiles; "
+                f"resolved stop {tiling.ending}{adjustment}"
+            )
+
+        selected = tilings[self.resume_tiling.currentIndex()]
+        self.resume_tile.blockSignals(True)
+        self.resume_tile.setMaximum(selected.total_tiles)
+        self.resume_tile.blockSignals(False)
         try:
             spec = self.build_spec()
         except ValueError as exc:
-            self.summary.setStyleSheet("color: #b00020;")
-            self.summary.setText(f"Invalid geometry: {exc}")
+            self.sequence_summary.setStyleSheet("color: #b00020;")
+            self.sequence_summary.setText(f"Invalid geometry: {exc}")
             return
-        self.summary.setStyleSheet("")
-        self.summary.setText(
-            f"Resolved grid: {spec.tiles_x} x {spec.tiles_y} x {spec.tiles_z} "
-            f"= {spec.total_tiles} tiles; signed extents {spec.extents_mm} mm."
+        self.sequence_summary.setStyleSheet("")
+        self.sequence_summary.setText(
+            f"Full run: {spec.total_tiles} total tiles; resume at Tiling "
+            f"{spec.resume_tiling}, tile {spec.resume_tile}; safe rotation Z "
+            f"{spec.safe_transition_z_mm:.6f} mm."
         )
 
+    def _normalize_stop_fields(self, index: int) -> None:
+        """Commit outward-rounded XY stops after the user finishes one geometry edit."""
+        try:
+            tiling = self._build_tiling(index)
+        except ValueError:
+            self._update_summary()
+            return
+
+        # Update only endpoints that remain inside live limits; preflight reports the rest.
+        fields = self.fields[index]
+        for axis, stop_box, resolved_stop in (
+            (AxisName.X, fields["stop_x"], tiling.end_x_mm),
+            (AxisName.Y, fields["stop_y"], tiling.end_y_mm),
+        ):
+            if self.limits[axis].contains(resolved_stop) and not isclose(
+                stop_box.value(), resolved_stop, rel_tol=0.0, abs_tol=0.0000005
+            ):
+                stop_box.blockSignals(True)
+                stop_box.setValue(resolved_stop)
+                stop_box.blockSignals(False)
+
+        # Refresh once after both fields settle so counts and resume bounds agree.
+        self._update_summary()
+
     def _accept_valid_geometry(self) -> None:
-        # Accept only a complete spec so the caller never handles partial widget state.
+        """Accept only a complete sequence so callers never handle partial state."""
         try:
             self.validated_spec = self.build_spec()
         except ValueError as exc:
-            self.summary.setStyleSheet("color: #b00020;")
-            self.summary.setText(f"Invalid geometry: {exc}")
+            self.sequence_summary.setStyleSheet("color: #b00020;")
+            self.sequence_summary.setText(f"Invalid geometry: {exc}")
             return
         self.accept()

@@ -89,7 +89,7 @@ def test_zaber_adapter_matches_serial_and_sends_units() -> None:
     assert connection.closed
 
 
-def test_zaber_adapter_rejects_configured_limits_beyond_device_range() -> None:
+def test_zaber_adapter_uses_device_limits_instead_of_profile_placeholders() -> None:
     fake_axis = FakeAxis()
     device = SimpleNamespace(
         serial_number=1234,
@@ -112,11 +112,8 @@ def test_zaber_adapter_rejects_configured_limits_beyond_device_range() -> None:
     )
 
     stage = ZaberLinearStage(AxisName.X, component, manager)
-    try:
-        stage.connect()
-    except Exception as error:
-        assert "exceed device limits [0.0, 300.0] mm" in str(error)
-    else:
-        raise AssertionError("out-of-range software limits should fail")
+    stage.connect()
 
+    assert stage.get_limits() == LimitsConfig(0.0, 300.0)
+    stage.disconnect()
     assert connection.closed

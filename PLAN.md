@@ -84,6 +84,11 @@ Primary references: `references/ni-examples/digital_in` and
 | 11 | DAQ acquisition handshake and dummy acquirer | Complete (simulation/fake-verified) |
 | 12 | Per-run count or endpoint mosaic geometry | Complete (simulation-verified) |
 | 13 | Non-blocking interactive GUI launch | Complete (simulation-verified) |
+| 14 | Attached mosaic viewer, restart, cancel, and API limits | Complete (simulation/fake-verified) |
+| 15 | Sequential fixed-Z dual-rotation mosaic runs | Complete (simulation/fake-verified) |
+| 16 | Fixed current-tiling viewer and timing estimate | Complete (simulation-verified) |
+| 17 | Circular numbered digital I/O indicators | Complete (simulation-verified) |
+| 18 | In-place endpoint normalization after editing | Complete (simulation-verified) |
 
 Every phase must pass:
 
@@ -167,8 +172,78 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Document IPython/Jupyter event-loop integration and interactive safety.
 - [x] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 14 — Mosaic recovery and device limits
+
+- [x] Attach the all-axis position and mosaic-progress viewer to the main GUI.
+- [x] Add embedded cancellation and restart from a one-based tile number.
+- [x] Round endpoint spans outward while preserving configured step sizes.
+- [x] Replace physical profile limits with limits queried from vendor APIs.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
+### Phase 15 — Sequential dual-rotation mosaics
+
+- [x] Define two independent endpoint-based XY tilings with fixed per-tiling Z.
+- [x] Fix Tiling 1 at 0 degrees and run user-configured Tiling 2 automatically.
+- [x] Move through a configured safe Z before rotation changes.
+- [x] Resume by tiling and one-based tile, with progress shown in the attached viewer.
+- [x] Require all four axes connected/homed and preflight the complete path.
+- [x] Remove the temporary origin/reset workflow and use controller coordinates.
+- [x] Preserve one audit stream, optional per-tile DAQ handshaking, and cancellation.
+
+### Phase 16 — Current-tiling viewer and timing
+
+- [x] Reuse one scalable overview for the tiling currently being acquired.
+- [x] Keep the progress dock permanently attached to the main window.
+- [x] Show elapsed and estimated remaining time after two completed tiles.
+- [x] Refresh timing after each later tile and reset it between tilings.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
+### Phase 17 — Circular digital I/O indicators
+
+- [x] Display Digital In and Digital Out as circular pins numbered 0 through 7.
+- [x] Use green for HIGH, gray for LOW, amber for UNKNOWN, and dashed disabled pins.
+- [x] Preserve atomic output selection and worker-thread DAQ operations.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
+### Phase 18 — In-place endpoint normalization
+
+- [x] Keep live endpoint previews while the operator is typing.
+- [x] Replace incompatible XY stop fields with their outward-rounded values when editing ends.
+- [x] Leave out-of-limit rounded values uncommitted and display the validation error.
+- [x] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Mosaic endpoint fields now commit their outward-rounded stop values when the
+  edited start, stop, or step box loses focus or accepts Enter.
+- Replaced text-heavy Digital In and Digital Out checkboxes with matching round,
+  numbered 0-through-7 pin controls. HIGH is green while LOW is gray.
+- Normal verification: 80 passed, 1 hardware safety guard deselected; Ruff and
+  mypy pass. Tests used simulation and GUI fakes only; no hardware was accessed.
+- Replaced the single XYZ mosaic with one full run containing two sequential,
+  independently configured XY tilings at fixed Z positions. Tiling 1 is fixed
+  at 0 degrees and Tiling 2 uses the operator-defined rotation.
+- Replaced the two simultaneous progress overviews with one fixed, non-detachable
+  current-tiling view. It switches automatically when Tiling 2 begins.
+- Added per-tiling elapsed and estimated-remaining labels after two completed
+  tiles, updated after each later completion and reset between tilings.
+- Added a safe-Z rotation transition, tiling/tile resume, full four-axis
+  readiness and path preflight.
+- Removed application-origin controls and reference offsets; positions and audit
+  entries now use the controller-home coordinate system.
+- Normal verification: 79 passed, 1 hardware safety guard deselected; Ruff and
+  mypy pass. All tests used simulation or vendor fakes; no hardware was accessed.
+- Replaced the per-tile scroll area with a scalable painted mosaic overview that
+  keeps every XY tile and Z plane visible while shading current and completed work.
+- Normal verification: 78 passed, 1 hardware test deselected; Ruff and mypy pass.
+  The scalable viewer was exercised with a 64,000-tile simulated run.
+- Added an attached all-axis/mosaic viewer, Cancel Mosaic, user-defined origins,
+  origin-relative motion and logs, sequential reset, and restart-tile selection.
+- Endpoint runs now extend incompatible endpoints outward to the next full step.
+- Schema 5 keeps explicit synthetic limits for simulations and derives physical
+  limits from Zaber and Kinesis APIs after connection.
+- Normal verification: 76 passed, 1 hardware test deselected; Ruff and mypy
+  pass. Vendor-limit tests use fakes only. No physical hardware was accessed.
 - Added `launch_gui()` and `GuiSession` for non-blocking interactive exploration
   while preserving the existing blocking console entry point.
 - Documented `%gui qt`, returned application/window references, manual event

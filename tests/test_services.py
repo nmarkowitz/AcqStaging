@@ -3,15 +3,16 @@ from dataclasses import replace
 import pytest
 
 from acq_staging.adapters.simulated import SimulatedMotionAxis
-from acq_staging.configuration import MosaicConfig, default_simulation_config
+from acq_staging.configuration import AppConfig, MosaicConfig, default_simulation_config
 from acq_staging.errors import MotionSafetyError
 from acq_staging.factory import build_simulation_axes
 from acq_staging.models import (
     HOME_ORDER,
     AxisName,
     MosaicProgress,
-    MosaicRunSpec,
+    MosaicSequenceSpec,
     MosaicTilePhase,
+    MosaicTilingSpec,
 )
 from acq_staging.services import MotionService
 
@@ -21,16 +22,38 @@ def make_service() -> MotionService:
     return MotionService(config, build_simulation_axes(config))
 
 
+def make_sequence(
+    *,
+    first_stop_x: float = 2.0,
+    second_stop_x: float = 12.0,
+    resume_tiling: int = 1,
+    resume_tile: int = 1,
+) -> MosaicSequenceSpec:
+    first = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 0.0, first_stop_x, 1.0, 5.0, 0.0
+    )
+    second = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 10.0, 10.0, second_stop_x, 11.0, 6.0, 45.0
+    )
+    return MosaicSequenceSpec(first, second, 20.0, resume_tiling, resume_tile)
+
+
+def ready_service(config: AppConfig | None = None) -> MotionService:
+    actual = config if config is not None else default_simulation_config()
+    service = MotionService(actual, build_simulation_axes(actual))
+    service.connect_all()
+    service.home_all()
+    return service
+
+
 def test_home_all_and_pose_order() -> None:
     service = make_service()
     service.connect_all()
     progress: list[AxisName] = []
     assert service.home_all(progress.append) == list(HOME_ORDER)
     assert progress == list(HOME_ORDER)
-    service.move_absolute(AxisName.X, 1.0)
-    service.move_absolute(AxisName.Y, 2.0)
-    service.move_absolute(AxisName.Z, 3.0)
-    service.move_absolute(AxisName.ROTATION, 4.0)
+    for axis, destination in zip(HOME_ORDER, (1.0, 2.0, 3.0, 4.0), strict=True):
+        service.move_absolute(axis, destination)
     assert service.pose.as_vector() == (1.0, 2.0, 3.0, 4.0)
 
 
@@ -46,7 +69,7 @@ def test_home_all_stops_on_failure() -> None:
     assert not service.axes[AxisName.Z].status().homed
 
 
-def test_motion_test_returns_to_start() -> None:
+def test_motion_test_returns_to_controller_home_position() -> None:
     service = make_service()
     service.connect(AxisName.X)
     service.home(AxisName.X)
@@ -65,153 +88,126 @@ def test_identify_requires_connection_and_does_not_move() -> None:
     assert service.axes[AxisName.X].get_position() == start
 
 
-def test_mosaic_plans_and_runs_xyz_serpentine() -> None:
-    config = replace(
-        default_simulation_config(),
-        mosaic=MosaicConfig(1.0, 2.0, 3.0, 3, 2, 2, 0.0, 0.0),
-    )
-    service = MotionService(config, build_simulation_axes(config))
-    service.connect_all()
-    service.home_all()
+def test_sequence_plans_two_independent_serpentine_xy_tilings() -> None:
+    service = ready_service()
+    first, second = service.plan_mosaic_sequence(make_sequence())
 
-    progress: list[MosaicProgress] = []
-    events: list[tuple[str, dict[str, object]]] = []
-    tiles = service.run_mosaic(
-        progress.append,
-        on_event=lambda event, data: events.append((event, data)),
-    )
-
-    assert [(tile.x_index, tile.y_index, tile.z_index) for tile in tiles] == [
-        (0, 0, 0),
-        (1, 0, 0),
-        (2, 0, 0),
-        (2, 1, 0),
-        (1, 1, 0),
-        (0, 1, 0),
-        (0, 0, 1),
-        (1, 0, 1),
-        (2, 0, 1),
-        (2, 1, 1),
-        (1, 1, 1),
-        (0, 1, 1),
-    ]
-    assert service.pose.as_vector()[:3] == (0.0, 2.0, 3.0)
-    assert len(progress) == 2 * len(tiles)
-    assert progress[0].phase is MosaicTilePhase.CURRENT
-    assert progress[1].phase is MosaicTilePhase.COMPLETE
-    names = [event for event, _data in events]
-    assert names[0] == "MOSAIC_START"
-    assert "MOVEMENT_START" in names
-    assert "MOVEMENT_COMPLETE" in names
-    assert names[-1] == "MOSAIC_COMPLETE"
-
-
-def test_count_mosaic_run_spec_starts_from_current_pose() -> None:
-    service = make_service()
-    service.connect_all()
-    service.home_all()
-    service.move_absolute(AxisName.X, 5.0)
-    run_spec = MosaicRunSpec.from_tile_counts(0.5, 0.0, 0.0, 2, 1, 1)
-
-    tiles = service.plan_mosaic(run_spec=run_spec)
-
-    assert [tile.x_mm for tile in tiles] == [5.0, 5.5]
-
-
-def test_endpoint_mosaic_runs_inferred_negative_direction_serpentine() -> None:
-    service = make_service()
-    service.connect_all()
-    service.home_all()
-    run_spec = MosaicRunSpec.from_endpoints(
-        1.0,
-        1.0,
-        0.0,
-        3.0,
-        0.0,
-        0.0,
-        1.0,
-        2.0,
-        0.0,
-    )
-
-    tiles = service.run_mosaic(run_spec=run_spec)
-
-    assert [(tile.x_mm, tile.y_mm) for tile in tiles] == [
-        (3.0, 0.0),
-        (2.0, 0.0),
+    assert [(tile.x_mm, tile.y_mm) for tile in first] == [
+        (0.0, 0.0),
         (1.0, 0.0),
-        (1.0, 1.0),
+        (2.0, 0.0),
         (2.0, 1.0),
-        (3.0, 1.0),
-        (3.0, 2.0),
-        (2.0, 2.0),
-        (1.0, 2.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
     ]
+    assert all(tile.z_mm == 5.0 and tile.theta_deg == 0.0 for tile in first)
+    assert all(tile.z_mm == 6.0 and tile.theta_deg == 45.0 for tile in second)
 
 
-def test_mosaic_preflight_rejects_entire_path_before_motion() -> None:
+def test_sequence_runs_first_then_safe_rotation_transition_then_second() -> None:
     config = replace(
         default_simulation_config(),
-        mosaic=MosaicConfig(200.0, 1.0, 0.0, 3, 1, 1, 0.0, 0.0),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 30.0),
     )
-    service = MotionService(config, build_simulation_axes(config))
-    service.connect_all()
-    service.home_all()
+    service = ready_service(config)
+    events: list[tuple[str, dict[str, object]]] = []
+    progress: list[MosaicProgress] = []
 
-    with pytest.raises(MotionSafetyError, match="outside software limits"):
-        service.run_mosaic()
+    service.run_mosaic_sequence(
+        make_sequence(), progress.append, lambda event, data: events.append((event, data))
+    )
 
-    assert service.axes[AxisName.X].get_position() == 0.0
+    names = [event for event, _details in events]
+    first_complete = names.index("TILING_COMPLETE")
+    second_start = names.index("TILING_START", first_complete + 1)
+    assert first_complete < second_start
+    second_moves = [
+        details
+        for event, details in events[second_start:]
+        if event == "MOVEMENT_START"
+    ]
+    assert [(item["axis"], item["destination"]) for item in second_moves[:3]] == [
+        ("z", 20.0),
+        ("rotation", 45.0),
+        ("z", 6.0),
+    ]
+    assert service.pose.as_vector() == (10.0, 11.0, 6.0, 45.0)
+    assert progress[-1].tiling_number == 2
+    assert progress[-1].phase is MosaicTilePhase.COMPLETE
 
 
-def test_endpoint_mosaic_preflight_rejects_path_before_motion() -> None:
+def test_sequence_resume_from_second_skips_first_tiling() -> None:
+    service = ready_service()
+    events: list[tuple[str, dict[str, object]]] = []
+    progress: list[MosaicProgress] = []
+    spec = make_sequence(resume_tiling=2, resume_tile=2)
+
+    service.run_mosaic_sequence(
+        spec, progress.append, lambda event, data: events.append((event, data))
+    )
+
+    assert {item.tiling_number for item in progress} == {2}
+    assert progress[0].number == 2
+    starts = [details["tiling"] for event, details in events if event == "TILING_START"]
+    assert starts == [2]
+
+
+def test_sequence_preflight_rejects_second_path_before_any_motion() -> None:
+    service = ready_service()
+    spec = make_sequence(second_stop_x=400.0)
+
+    with pytest.raises(MotionSafetyError, match="outside device limits"):
+        service.run_mosaic_sequence(spec)
+
+    assert service.pose.as_vector() == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_first_tiling_failure_prevents_second_tiling() -> None:
+    service = ready_service()
+    x_axis = service.axes[AxisName.X]
+    assert isinstance(x_axis, SimulatedMotionAxis)
+    x_axis.inject_failure("simulated tiling failure")
+    events: list[tuple[str, dict[str, object]]] = []
+
+    with pytest.raises(Exception, match="simulated tiling failure"):
+        service.run_mosaic_sequence(
+            make_sequence(),
+            on_event=lambda event, data: events.append((event, data)),
+        )
+
+    starts = [details["tiling"] for event, details in events if event == "TILING_START"]
+    assert starts == [1]
+    assert ("TILING_FAILED", {"tiling": 1, "error": "simulated tiling failure"}) in events
+    assert events[-1][0] == "FULL_RUN_FAILED"
+
+
+def test_sequence_requires_all_four_axes_connected_and_homed() -> None:
     service = make_service()
-    service.connect_all()
-    service.home_all()
-    run_spec = MosaicRunSpec.from_endpoints(
-        400.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        400.0,
-        0.0,
-        0.0,
-    )
-
-    with pytest.raises(MotionSafetyError, match="outside software limits"):
-        service.run_mosaic(run_spec=run_spec)
-
-    assert service.axes[AxisName.X].get_position() == 0.0
-
-
-def test_mosaic_timeout_stops_the_operation() -> None:
-    config = replace(
-        default_simulation_config(),
-        mosaic=MosaicConfig(1.0, 1.0, 0.0, 1, 1, 1, 0.1, 0.0, 0.01),
-    )
-    service = MotionService(config, build_simulation_axes(config))
-    service.connect_all()
-    service.home_all()
-
-    with pytest.raises(Exception, match="mosaic operation timed out"):
-        service.run_mosaic()
-
-
-def test_mosaic_can_skip_only_acknowledged_disconnected_axes() -> None:
-    config = replace(
-        default_simulation_config(),
-        mosaic=MosaicConfig(1.0, 1.0, 0.0, 2, 2, 1, 0.0, 0.0, 10.0),
-    )
-    service = MotionService(config, build_simulation_axes(config))
-    for axis in (AxisName.X, AxisName.Y):
+    for axis in (AxisName.X, AxisName.Y, AxisName.Z):
         service.connect(axis)
         service.home(axis)
 
-    with pytest.raises(MotionSafetyError, match="acknowledgement"):
-        service.run_mosaic()
+    with pytest.raises(MotionSafetyError, match="rotation"):
+        service.run_mosaic_sequence(make_sequence())
 
-    tiles = service.run_mosaic(allowed_disconnected=frozenset({AxisName.Z}))
-    assert len(tiles) == 4
-    assert service.axes[AxisName.Z].status().connected is False
+
+def test_sequence_timeout_stops_full_operation() -> None:
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.0, 1.0, 0.1, 0.0, 0.01),
+    )
+    service = ready_service(config)
+    one_tile = make_sequence(first_stop_x=0.0, second_stop_x=10.0)
+
+    with pytest.raises(Exception, match="mosaic operation timed out"):
+        service.run_mosaic_sequence(one_tile)
+
+
+def test_stop_mosaic_requests_stop_from_rotation_too() -> None:
+    service = ready_service()
+    rotation = service.axes[AxisName.ROTATION]
+    assert isinstance(rotation, SimulatedMotionAxis)
+
+    service.stop_mosaic()
+
+    assert rotation.status().busy is False

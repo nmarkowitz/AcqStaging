@@ -11,6 +11,7 @@ from acq_staging.models import (
     AxisName,
     ComponentIdentity,
     ComponentStatus,
+    LimitsConfig,
 )
 
 
@@ -18,8 +19,12 @@ class SimulatedMotionAxis:
     """Reusable in-process simulator for linear and rotary axes."""
 
     def __init__(self, axis: AxisName, config: ComponentConfig) -> None:
+        # Configuration validation guarantees simulators always have synthetic travel limits.
+        if config.limits is None:
+            raise AdapterError("simulated axis requires configured limits")
         self.axis = axis
         self.config = config
+        self._limits = config.limits
         self._position = config.simulation_start
         self._connected = False
         self._homed = False
@@ -76,7 +81,7 @@ class SimulatedMotionAxis:
         try:
             self._delay()
             with self._lock:
-                self._position = self.config.limits.minimum
+                self._position = self._limits.minimum
                 self._homed = True
         finally:
             self._finish_operation()
@@ -89,7 +94,7 @@ class SimulatedMotionAxis:
     def move_absolute(self, destination: float) -> None:
         # Mirror production prerequisites so simulation exercises the same safety flow.
         self._require_ready_for_motion()
-        if not self.config.limits.contains(destination):
+        if not self._limits.contains(destination):
             raise MotionSafetyError(
                 f"{self.axis.value}: destination {destination} is outside software limits"
             )
@@ -108,6 +113,10 @@ class SimulatedMotionAxis:
         self._require_connected()
         with self._lock:
             return self._position
+
+    def get_limits(self) -> LimitsConfig:
+        """Return the simulator-defined travel range without requiring connection."""
+        return self._limits
 
     def _require_connected(self) -> None:
         if not self.status().connected:

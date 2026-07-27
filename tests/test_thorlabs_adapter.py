@@ -24,7 +24,9 @@ class FakeChannel:
         self.identified = False
         self.IsActuatorDefined = True
         self.IsMotorSettingsValid = True
-        self.MotorDeviceSettings = object()
+        self.MotorDeviceSettings = SimpleNamespace(
+            Limit=SimpleNamespace(CCWSoftLimitUnit=0.0, CWSoftLimitUnit=360.0)
+        )
         self.settings_read = False
         self.configuration_updated = False
 
@@ -148,6 +150,7 @@ def test_bsc101_adapter_uses_channel_one_and_callback_motion() -> None:
     assert facade.channel.settings_read
     assert facade.channel.configuration_updated
     assert stage.get_position() == 45.0
+    assert stage.get_limits() == LimitsConfig(0.0, 360.0)
     assert stage.identity().model == "BSC101"
 
     stage.disconnect()

@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from acq_staging.configuration import ComponentConfig
-from acq_staging.models import AxisName, ComponentStatus
+from acq_staging.models import AxisName, ComponentStatus, LimitsConfig
 
 
 class AxisPanel(QGroupBox):
@@ -37,13 +37,14 @@ class AxisPanel(QGroupBox):
         self.position_label = QLabel("—")
         self.position_label.setObjectName(f"{axis.value}_position")
 
-        # Profile limits constrain values users can enter in the panel.
+        # Hardware ranges are replaced by API-reported limits after connection.
+        initial_limits = config.limits or LimitsConfig(-1_000_000.0, 1_000_000.0)
         self.target = QDoubleSpinBox()
-        self.target.setRange(config.limits.minimum, config.limits.maximum)
+        self.target.setRange(initial_limits.minimum, initial_limits.maximum)
         self.target.setDecimals(4)
         self.target.setValue(config.simulation_start)
         self.increment = QDoubleSpinBox()
-        self.increment.setRange(0.0001, config.limits.maximum - config.limits.minimum)
+        self.increment.setRange(0.0001, initial_limits.span)
         self.increment.setDecimals(4)
         self.increment.setValue(config.motion.jog_increment)
 
@@ -105,7 +106,15 @@ class AxisPanel(QGroupBox):
     def apply_config(self, config: ComponentConfig) -> None:
         """Update editable ranges and defaults for a newly loaded profile."""
         self.config = config
-        self.target.setRange(config.limits.minimum, config.limits.maximum)
+        # A broad disconnected range avoids inventing physical travel before API discovery.
+        limits = config.limits or LimitsConfig(-1_000_000.0, 1_000_000.0)
+        self.target.setRange(limits.minimum, limits.maximum)
         self.target.setValue(config.simulation_start)
-        self.increment.setRange(0.0001, config.limits.maximum - config.limits.minimum)
+        self.increment.setRange(0.0001, limits.span)
         self.increment.setValue(config.motion.jog_increment)
+
+    def apply_limits(self, limits: LimitsConfig) -> None:
+        """Apply adapter-reported limits translated into the current reference frame."""
+        # Updating ranges clamps stale entries before they can become motion requests.
+        self.target.setRange(limits.minimum, limits.maximum)
+        self.increment.setRange(0.0001, limits.span)

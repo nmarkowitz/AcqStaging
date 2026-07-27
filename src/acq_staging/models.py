@@ -5,8 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from math import isclose, isfinite
-from typing import cast
+from math import ceil, isclose, isfinite
+
+from acq_staging.errors import ConfigurationError
+
+
+@dataclass(frozen=True, slots=True)
+class LimitsConfig:
+    """Validated physical travel range reported by an adapter or simulator."""
+
+    minimum: float
+    maximum: float
+
+    def validate(self, field: str) -> None:
+        if self.minimum >= self.maximum:
+            raise ConfigurationError(f"{field}: minimum must be less than maximum")
+
+    def contains(self, value: float) -> bool:
+        """Return whether a physical position lies inside this travel range."""
+        return self.minimum <= value <= self.maximum
+
+    @property
+    def span(self) -> float:
+        """Return the available physical travel."""
+        return self.maximum - self.minimum
 
 
 class AxisName(StrEnum):
@@ -96,197 +118,138 @@ class DiagnosticResult:
 
 @dataclass(frozen=True, slots=True)
 class MosaicTile:
-    """One absolute XYZ destination in a serpentine mosaic."""
+    """One controller-home destination in a two-tiling mosaic sequence."""
 
     x_mm: float
     y_mm: float
     z_mm: float
+    theta_deg: float
     x_index: int
     y_index: int
-    z_index: int
-
-
-class MosaicInputMode(StrEnum):
-    """Operator-selectable ways to define one mosaic run."""
-
-    TILE_COUNTS = "tile_counts"
-    ENDPOINTS = "endpoints"
+    tiling_index: int
 
 
 @dataclass(frozen=True, slots=True)
-class MosaicRunSpec:
-    """Validated transient XYZ geometry for one mosaic run."""
+class MosaicTilingSpec:
+    """One endpoint-defined XY tiling at fixed Z and rotation positions."""
 
-    input_mode: MosaicInputMode
     step_x_mm: float
     step_y_mm: float
-    step_z_mm: float
     tiles_x: int
     tiles_y: int
-    tiles_z: int
-    begin_x_mm: float | None = None
-    begin_y_mm: float | None = None
-    begin_z_mm: float | None = None
-    end_x_mm: float | None = None
-    end_y_mm: float | None = None
-    end_z_mm: float | None = None
+    begin_x_mm: float
+    begin_y_mm: float
+    end_x_mm: float
+    end_y_mm: float
+    z_mm: float
+    rotation_deg: float
 
     def __post_init__(self) -> None:
-        # Reject unusable numeric geometry before it reaches service preflight.
-        steps = self.steps
-        if any(not isfinite(step) or step < 0 for step in steps):
-            raise ValueError("mosaic step sizes must be finite and non-negative")
-        if any(count <= 0 for count in self.tile_counts):
+        # Reject non-finite destinations before any service can preflight motion.
+        coordinates = (*self.beginning, *self.ending, self.z_mm, self.rotation_deg)
+        if any(not isfinite(value) for value in coordinates):
+            raise ValueError("mosaic positions must be finite")
+        if any(not isfinite(step) or step <= 0 for step in self.steps):
+            raise ValueError("mosaic X and Y step sizes must be finite and positive")
+        if self.tiles_x <= 0 or self.tiles_y <= 0:
             raise ValueError("mosaic tile counts must be positive")
-        for axis, step, count in zip("XYZ", steps, self.tile_counts, strict=True):
-            if count > 1 and step == 0:
-                raise ValueError(f"{axis} step must be positive for multiple tiles")
-
-        # Each input mode owns one unambiguous set of origin fields.
-        coordinates = (*self.beginning, *self.ending)
-        if self.input_mode is MosaicInputMode.TILE_COUNTS:
-            if any(value is not None for value in coordinates):
-                raise ValueError("tile-count mode must use the observed current position")
-            return
-        if self.input_mode is not MosaicInputMode.ENDPOINTS:
-            raise ValueError(f"unsupported mosaic input mode {self.input_mode!r}")
-        if any(value is None or not isfinite(value) for value in coordinates):
-            raise ValueError("endpoint mode requires finite beginning and end coordinates")
-
-        # Recompute endpoint counts so direct construction cannot bypass divisibility.
-        beginning = cast(tuple[float, float, float], self.beginning)
-        ending = cast(tuple[float, float, float], self.ending)
         expected = tuple(
             self._count_for_endpoints(axis, begin, end, step)
             for axis, begin, end, step in zip(
-                "XYZ",
-                beginning,
-                ending,
-                steps,
+                "XY", self.beginning, self.ending, self.steps,
                 strict=True,
             )
         )
         if expected != self.tile_counts:
-            raise ValueError("endpoint tile counts do not match the configured step sizes")
-
-    @classmethod
-    def from_tile_counts(
-        cls,
-        step_x_mm: float,
-        step_y_mm: float,
-        step_z_mm: float,
-        tiles_x: int,
-        tiles_y: int,
-        tiles_z: int,
-    ) -> MosaicRunSpec:
-        """Create count-based geometry whose origin is observed at run time."""
-        return cls(
-            MosaicInputMode.TILE_COUNTS,
-            step_x_mm,
-            step_y_mm,
-            step_z_mm,
-            tiles_x,
-            tiles_y,
-            tiles_z,
-        )
+            raise ValueError("XY tile counts do not match the configured step sizes")
 
     @classmethod
     def from_endpoints(
         cls,
         step_x_mm: float,
         step_y_mm: float,
-        step_z_mm: float,
         begin_x_mm: float,
         begin_y_mm: float,
-        begin_z_mm: float,
         end_x_mm: float,
         end_y_mm: float,
-        end_z_mm: float,
-    ) -> MosaicRunSpec:
-        """Create endpoint geometry with direction inferred independently per axis."""
+        z_mm: float,
+        rotation_deg: float,
+    ) -> MosaicTilingSpec:
+        """Create XY geometry with outward endpoint rounding on each axis."""
         # Convert each inclusive span into a tile count without changing its step.
-        steps = (step_x_mm, step_y_mm, step_z_mm)
-        beginning = (begin_x_mm, begin_y_mm, begin_z_mm)
-        ending = (end_x_mm, end_y_mm, end_z_mm)
+        steps = (step_x_mm, step_y_mm)
+        beginning = (begin_x_mm, begin_y_mm)
+        requested_ending = (end_x_mm, end_y_mm)
         counts = tuple(
             cls._count_for_endpoints(axis, begin, end, step)
             for axis, begin, end, step in zip(
-                "XYZ",
+                "XY", beginning, requested_ending, steps,
+                strict=True,
+            )
+        )
+        # Extend each non-divisible span to the next full step in its entered direction.
+        ending = tuple(
+            begin
+            if count == 1
+            else begin + (1.0 if requested >= begin else -1.0) * (count - 1) * step
+            for begin, requested, count, step in zip(
                 beginning,
-                ending,
+                requested_ending,
+                counts,
                 steps,
                 strict=True,
             )
         )
         return cls(
-            MosaicInputMode.ENDPOINTS,
             steps[0],
             steps[1],
-            steps[2],
             counts[0],
             counts[1],
-            counts[2],
             beginning[0],
             beginning[1],
-            beginning[2],
             ending[0],
             ending[1],
-            ending[2],
+            z_mm,
+            rotation_deg,
         )
 
     @property
-    def steps(self) -> tuple[float, float, float]:
-        """Return positive XYZ step magnitudes in millimetres."""
-        return (self.step_x_mm, self.step_y_mm, self.step_z_mm)
+    def steps(self) -> tuple[float, float]:
+        """Return positive XY step magnitudes in millimetres."""
+        return (self.step_x_mm, self.step_y_mm)
 
     @property
-    def tile_counts(self) -> tuple[int, int, int]:
-        """Return resolved inclusive XYZ position counts."""
-        return (self.tiles_x, self.tiles_y, self.tiles_z)
+    def tile_counts(self) -> tuple[int, int]:
+        """Return resolved inclusive XY position counts."""
+        return (self.tiles_x, self.tiles_y)
 
     @property
-    def beginning(self) -> tuple[float | None, float | None, float | None]:
-        """Return explicit endpoint-mode beginnings, or unknown count-mode origins."""
-        return (self.begin_x_mm, self.begin_y_mm, self.begin_z_mm)
+    def beginning(self) -> tuple[float, float]:
+        """Return the controller-home XY beginning."""
+        return (self.begin_x_mm, self.begin_y_mm)
 
     @property
-    def ending(self) -> tuple[float | None, float | None, float | None]:
-        """Return explicit endpoint-mode endings, or unknown count-mode endpoints."""
-        return (self.end_x_mm, self.end_y_mm, self.end_z_mm)
+    def ending(self) -> tuple[float, float]:
+        """Return the outward-rounded controller-home XY ending."""
+        return (self.end_x_mm, self.end_y_mm)
 
     @property
     def total_tiles(self) -> int:
         """Return the number of tile destinations in this run."""
-        return self.tiles_x * self.tiles_y * self.tiles_z
+        return self.tiles_x * self.tiles_y
 
     @property
-    def extents_mm(self) -> tuple[float, float, float]:
-        """Return signed XYZ travel from each grid beginning to its end."""
-        if self.input_mode is MosaicInputMode.ENDPOINTS:
-            beginning = cast(tuple[float, float, float], self.beginning)
-            ending = cast(tuple[float, float, float], self.ending)
-            return (
-                ending[0] - beginning[0],
-                ending[1] - beginning[1],
-                ending[2] - beginning[2],
-            )
-        return (
-            (self.tiles_x - 1) * self.step_x_mm,
-            (self.tiles_y - 1) * self.step_y_mm,
-            (self.tiles_z - 1) * self.step_z_mm,
-        )
+    def extents_mm(self) -> tuple[float, float]:
+        """Return signed XY travel from the beginning to the rounded ending."""
+        return (self.end_x_mm - self.begin_x_mm, self.end_y_mm - self.begin_y_mm)
 
-    def coordinate(self, axis_index: int, tile_index: int, observed_origin: float) -> float:
-        """Resolve one absolute coordinate from a grid index and observed origin."""
+    def coordinate(self, axis_index: int, tile_index: int) -> float:
+        """Resolve one controller-home coordinate from an XY grid index."""
         if tile_index < 0 or tile_index >= self.tile_counts[axis_index]:
             raise IndexError("mosaic tile index is outside the resolved grid")
-        if self.input_mode is MosaicInputMode.TILE_COUNTS:
-            return observed_origin + tile_index * self.steps[axis_index]
-
         # Endpoint direction changes the increment sign while preserving its magnitude.
         begin = self.beginning[axis_index]
         end = self.ending[axis_index]
-        assert begin is not None and end is not None
         if tile_index == self.tile_counts[axis_index] - 1:
             return end
         direction = 1.0 if end >= begin else -1.0
@@ -296,19 +259,52 @@ class MosaicRunSpec:
     def _count_for_endpoints(axis: str, begin: float, end: float, step: float) -> int:
         if not isfinite(begin) or not isfinite(end):
             raise ValueError(f"{axis} endpoints must be finite")
-        # A zero span represents one plane even when its unused step is zero.
+        if not isfinite(step) or step <= 0:
+            raise ValueError(f"{axis} step must be finite and positive")
+        # A zero span represents one tile while retaining its configured step.
         span = abs(end - begin)
         if isclose(span, 0.0, rel_tol=0.0, abs_tol=1e-12):
             return 1
-        if not isfinite(step) or step <= 0:
-            raise ValueError(f"{axis} step must be positive when endpoints differ")
 
-        # Accept only floating-point representation noise around a whole interval count.
+        # Round the requested span up so every interval keeps the exact configured step.
         intervals = span / step
-        rounded = round(intervals)
-        if not isclose(intervals, rounded, rel_tol=0.0, abs_tol=1e-9):
-            raise ValueError(f"{axis} endpoint span must be an exact multiple of its step")
-        return rounded + 1
+        rounded_up = ceil(intervals - 1e-9)
+        return rounded_up + 1
+
+
+@dataclass(frozen=True, slots=True)
+class MosaicSequenceSpec:
+    """Two tilings executed sequentially with a safe rotation-transition Z."""
+
+    tiling_one: MosaicTilingSpec
+    tiling_two: MosaicTilingSpec
+    safe_transition_z_mm: float
+    resume_tiling: int = 1
+    resume_tile: int = 1
+
+    def __post_init__(self) -> None:
+        # The first acquisition orientation is a locked part of the run contract.
+        if not isclose(self.tiling_one.rotation_deg, 0.0, abs_tol=1e-9):
+            raise ValueError("tiling 1 rotation must be 0 degrees")
+        if not isfinite(self.safe_transition_z_mm):
+            raise ValueError("safe transition Z must be finite")
+        if self.resume_tiling not in (1, 2):
+            raise ValueError("resume tiling must be 1 or 2")
+        active = self.tilings[self.resume_tiling - 1]
+        if self.resume_tile < 1 or self.resume_tile > active.total_tiles:
+            raise ValueError(
+                f"resume tile must be between 1 and {active.total_tiles}"
+            )
+
+    @property
+    def tilings(self) -> tuple[MosaicTilingSpec, MosaicTilingSpec]:
+        """Return both tilings in their mandatory execution order."""
+        return (self.tiling_one, self.tiling_two)
+
+    @property
+    def total_tiles(self) -> int:
+        """Return the total destinations across both tilings."""
+        return self.tiling_one.total_tiles + self.tiling_two.total_tiles
 
 
 class MosaicTilePhase(StrEnum):
@@ -321,10 +317,13 @@ class MosaicTilePhase(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MosaicProgress:
-    """Worker-safe progress event for one mosaic tile."""
+    """Worker-safe progress event within a two-tiling sequence."""
 
+    tiling_number: int
     number: int
     total: int
+    overall_number: int
+    overall_total: int
     tile: MosaicTile
     phase: MosaicTilePhase
 

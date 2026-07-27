@@ -36,7 +36,7 @@ def test_rejects_invalid_limits() -> None:
 
 def test_config_dictionary_is_json_serializable() -> None:
     encoded = json.dumps(default_simulation_config().to_dict())
-    assert json.loads(encoded)["schema_version"] == 4
+    assert json.loads(encoded)["schema_version"] == 6
 
 
 def test_schema_three_profile_migrates_with_handshake_disabled() -> None:
@@ -47,7 +47,7 @@ def test_schema_three_profile_migrates_with_handshake_disabled() -> None:
 
     migrated = config_from_dict(data)
 
-    assert migrated.schema_version == 4
+    assert migrated.schema_version == 6
     assert migrated.acquisition_handshake.enabled is False
 
 
@@ -55,7 +55,7 @@ def test_rejects_mosaic_step_outside_multi_tile_dimension() -> None:
     data = default_simulation_config().to_dict()
     data["mosaic"]["step_x_mm"] = 0.0
 
-    with pytest.raises(ConfigurationError, match="step_x_mm"):
+    with pytest.raises(ConfigurationError, match="steps"):
         config_from_dict(data)
 
 
@@ -69,7 +69,39 @@ def test_hardware_example_keeps_bsc101_dll_path_in_profile() -> None:
     assert rotation.axis_number == 1
     assert rotation.device_settings_name == "HDR50"
     assert rotation.dll_directory == r"C:\Program Files\Thorlabs\Kinesis"
+    assert all(component.limits is None for component in config.components.values())
     assert config.mosaic.operation_timeout_s == 3600.0
+
+
+def test_schema_four_hardware_limits_migrate_to_api_discovery() -> None:
+    # Older physical profiles are accepted, but authored limits are discarded in memory.
+    data = load_config(Path("configs/hardware.example.json")).to_dict()
+    data["schema_version"] = 4
+    data["components"]["x"]["limits"] = {"minimum": -99.0, "maximum": 99.0}
+
+    migrated = config_from_dict(data)
+
+    assert migrated.schema_version == 6
+    assert migrated.components[AxisName.X].limits is None
+
+
+def test_schema_five_mosaic_defaults_migrate_without_z_or_counts() -> None:
+    data = default_simulation_config().to_dict()
+    data["schema_version"] = 5
+    data["mosaic"].update(
+        {"step_z_mm": 0.1, "tiles_x": 3, "tiles_y": 4, "tiles_z": 2}
+    )
+
+    migrated = config_from_dict(data)
+
+    assert migrated.schema_version == 6
+    assert set(migrated.to_dict()["mosaic"]) == {
+        "step_x_mm",
+        "step_y_mm",
+        "settling_time_s",
+        "dwell_time_s",
+        "operation_timeout_s",
+    }
 
 
 def test_bsc101_requires_attached_stage_settings_name() -> None:

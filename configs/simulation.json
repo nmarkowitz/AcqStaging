@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "profile_name": "Default Simulation",
   "connections": {},
   "components": {
@@ -63,10 +63,6 @@
   "mosaic": {
     "step_x_mm": 2.8,
     "step_y_mm": 2.8,
-    "step_z_mm": 0.001,
-    "tiles_x": 7,
-    "tiles_y": 5,
-    "tiles_z": 1,
     "settling_time_s": 2.0,
     "dwell_time_s": 0.0,
     "operation_timeout_s": 3600.0

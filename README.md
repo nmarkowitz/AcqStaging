@@ -16,8 +16,8 @@ The tracked scan-head pose is displayed as:
 [x_mm, y_mm, z_mm, theta_deg]
 ```
 
-The application provides manual motion, XYZ mosaic traversal, and an optional
-DAQ Ready/Done handshake with external acquisition software. It does not control
+The application provides manual motion, sequential fixed-Z XY mosaic traversal,
+and an optional DAQ Ready/Done handshake with external acquisition software. It does not control
 a camera or acquire data itself; a standalone dummy acquirer is included for testing.
 
 ## Hardware safety
@@ -31,7 +31,7 @@ This software controls physical motion hardware.
 - Movement and motion tests require the component to be homed.
 - Home and Motion Test buttons require confirmation.
 - Home All always uses `X -> Y -> Z -> Rotation` and stops if one component fails.
-- Configured software limits are checked before vendor movement commands.
+- Device-reported travel limits are checked before physical vendor movement commands.
 - Normal automated tests use simulations or vendor fakes, never physical hardware.
 - Connecting Digital Out never writes a default level; output changes require
   the explicit **Apply Pin States** action.
@@ -40,7 +40,7 @@ This software controls physical motion hardware.
 - Hardware tests and scripts must not be run without explicit authorization and a reviewed configuration.
 
 The real adapters have been tested with fake vendor objects, not laboratory
-hardware. Review all ports, serial numbers, limits, velocities, accelerations,
+hardware. Review all ports, serial numbers, API-reported limits, velocities, accelerations,
 timeouts, and test distances before any hardware use.
 
 ## Installation
@@ -171,19 +171,35 @@ end-to-end inter-process operation requires correctly wired NI-DAQ lines.
 X -> Y -> Z -> Rotation
 ```
 
-- **Start Mosaic** opens a per-run setup window. Choose tile counts from the
-  current XYZ position or inclusive absolute beginning/end points, then review
-  the resolved grid before confirming motion.
-- X/Y/Z steps are prefilled from the profile and may be changed for that run
-  without modifying the active or saved configuration.
-- Endpoint mode supports increasing or decreasing travel independently on each
-  axis and requires each endpoint span to be an exact multiple of its step.
-- Starting a mosaic opens a non-modal tiling window with one grid per Z plane.
-  Its legend shows gray Pending tiles, orange Current tiles, and green Complete
-  tiles while the scan progresses.
-- If an XYZ component is disconnected, Start Mosaic lists it and requires
-  confirmation before running; acknowledged disconnected axes are skipped.
-- **Stop Mosaic** cancels mosaic waiting and requests a stop from X, Y, and Z.
+- **Start Mosaic** opens one setup window for two sequential XY tilings. Each
+  tiling has independent X/Y beginning and end positions, X/Y step sizes, and a
+  fixed Z position. Tiling 1 is fixed at 0 degrees; Tiling 2 has an editable
+  rotation angle.
+- **Safe transition Z** is the Z position used before changing rotation between
+  tilings. After rotation reaches its target, Z moves to that tiling's fixed
+  acquisition position.
+- Endpoint geometry supports increasing or decreasing travel independently on
+  X and Y. If an end is between valid steps, it is extended outward to the next
+  complete step. The preview updates while typing; after editing finishes, the
+  adjusted value replaces the entered stop directly in its field. An adjustment
+  outside a live machine limit is left unchanged and shown as an error.
+- **Resume tiling** and **resume tile** skip completed work after a crash. Reuse
+  the same geometry and select tiling 1 or 2 plus its one-based tile number; the
+  mosaic audit log records both values.
+- The attached **Axis Locations and Mosaic** dock continuously displays all four
+  controller positions and one fitted overview of the tiling currently running.
+  The overview switches automatically when Tiling 2 begins and always keeps its
+  complete XY grid visible. Shading shows gray Pending, orange Current/acquiring,
+  green Complete, and blue Prior-to-restart regions. This dock is fixed to the
+  main window and cannot be closed, moved, or undocked.
+- **Elapsed** and **Estimated remaining** appear after the second tile of the
+  current tiling completes. They update after every later completed tile using
+  that tiling's average completed-tile duration, and reset when Tiling 2 begins.
+- Start Mosaic requires X, Y, Z, and Rotation to be connected and homed. Both
+  complete paths, including the safe rotation transition, are checked against
+  adapter-reported limits before the first movement.
+- **Cancel Mosaic** in the attached viewer and **Stop Mosaic** in the toolbar
+  cancel waits and request a stop from X, Y, Z, and Rotation.
 - With acquisition handshaking enabled, each settled tile is held orange while
   movement waits for acquisition Done before marking the tile complete.
 
@@ -214,12 +230,13 @@ confirmation.
 ### Digital In and Digital Out panels
 
 Both panels provide independent **Connect** and **Disconnect** controls.
-Digital In displays every configured pin as `HIGH`, `LOW`, or `UNKNOWN` and can
-be refreshed with **Read Pins**; connected inputs are also polled in a worker.
-Digital Out provides one checkbox per configured pin. Select one or many pins
-and click **Apply Pin States** to write the complete configured output set in
-one operation. Each panel always shows eight slots; pins outside the configured
-port width or subset are disabled and labeled `NOT CONFIGURED`.
+Digital In displays eight circular indicators numbered 0 through 7 and can be
+refreshed with **Read Pins**; connected inputs are also polled in a worker.
+Digital Out provides matching numbered circular controls. Select one or many
+pins and click **Apply Pin States** to write the complete configured output set
+in one operation. HIGH pins are green, LOW pins are gray, and UNKNOWN pins are
+amber. Pins outside the configured port width or subset are disabled with a
+dashed outline; hover over any circle for its line number and state.
 
 Hardware output states remain `UNKNOWN` until successfully set. After the first
 explicit Apply, the worker continuously reasserts the last applied output state
@@ -288,7 +305,7 @@ The major configuration sections are:
 
 ### Top-level settings
 
-- `schema_version`: currently `4`
+- `schema_version`: currently `6`
 - `profile_name`: descriptive profile name
 - `connections`: reusable Zaber serial connections
 - `components`: X, Y, Z, and rotation definitions
@@ -297,9 +314,12 @@ The major configuration sections are:
 - `digital_io`: Digital In and Digital Out device, port, pin, and timeout settings
 - `acquisition_handshake`: optional movement-side Ready/Done line and timeout settings
 
-Schema-version-3 application profiles load with acquisition handshaking disabled
-and save back as schema version 4. Older profiles still require the documented
-`mosaic` and `digital_io` sections.
+Schema-version-3 application profiles load with acquisition handshaking disabled.
+Schema-version-4 physical component limits are discarded during in-memory migration
+because schema 5 obtains those limits from the hardware APIs. Schema 6 removes
+obsolete Z-step and tile-count defaults now that each run defines two endpoint-based
+XY tilings with fixed Z. Migrated profiles save as schema version 6. Older profiles
+still require the documented `mosaic` and `digital_io` sections.
 
 ### Digital I/O settings
 
@@ -323,25 +343,21 @@ ports use `CHAN_FOR_ALL_LINES` with an integer bitmask. Pin subsets use
 The profile stores defaults for the **Start Mosaic** setup window. Per-run edits
 do not change the active profile or a saved JSON file:
 
-- `step_x_mm`, `step_y_mm`, and `step_z_mm`: default distance between tile positions
-- `tiles_x`, `tiles_y`, and `tiles_z`: default count-mode positions per dimension
+- `step_x_mm` and `step_y_mm`: default distance between XY tile positions
 - `settling_time_s`: wait after reaching a tile before reporting it ready
 - `dwell_time_s`: optional motion-only placeholder wait at each tile
-- `operation_timeout_s`: maximum duration allowed for the entire mosaic
+- `operation_timeout_s`: maximum duration allowed for the full two-tiling run
 
-In tile-count mode, the observed XYZ pose becomes the first tile and each span
-is `(tiles - 1) * step`. In endpoint mode, beginning and end coordinates are
-absolute millimetre positions and both are included. The application derives
-each axis direction from the entered points; a nonzero span must divide into a
-whole number of unchanged steps, while equal points produce one position.
+The setup window defines both tilings with inclusive beginning/end controller
+coordinates. The application derives each XY direction from the entered points.
+A non-divisible span is extended outward to the next whole unchanged step, while
+equal points produce one position.
 
-Traversal snakes across X, advances Y after each row, and repeats the XY grid
-for each Z plane. Rotation remains fixed. Every XYZ axis must be connected and
-homed, and the entire absolute path must fit configured software limits before
-the first movement.
-Connected participating axes must be homed. Disconnected axes may be skipped
-only after the GUI lists them and the operator explicitly confirms the partial
-mosaic; homing is never bypassed for a connected axis.
+Each tiling snakes across X and advances Y after each row while Z remains fixed.
+Tiling 2 begins automatically only after Tiling 1 completes successfully. When
+the rotation target changes, the service moves Z to Safe transition Z, changes
+rotation, then moves Z to the next fixed acquisition position. The successful
+run ends at Tiling 2's last tile rather than returning home.
 
 The legacy tilt-mosaic, vibratome, dual-Z, cut, notification, and acquisition
 parameters are intentionally excluded. Only acquisition coordination signals are in scope.
@@ -371,7 +387,7 @@ X, Y, and Z may share a connection or use different connection IDs.
 
 - `enabled`
 - `adapter`: `simulated`, `zaber_ascii`, or `thorlabs_bsc101`
-- `limits.minimum` and `limits.maximum`
+- `limits.minimum` and `limits.maximum` for simulated adapters only; hardware uses `null`
 - `motion.velocity`
 - `motion.acceleration`
 - `motion.jog_increment`
@@ -401,15 +417,16 @@ The Thorlabs rotation component uses:
 
 When a real Zaber component connects, the adapter discovers the daisy chain,
 matches the configured serial number, and reads `limit.min` and `limit.max` in
-millimetres. The application's configured limits must fit inside that
-device-reported range. This check does not replace installation-specific
-software limits with the full mechanical travel.
+millimetres. Those device settings become the authoritative motion and GUI
+entry bounds; hardware profiles do not duplicate them.
 
 When the BSC101 rotation component connects, the adapter follows the verified
 channel-1 sequence from `scripts/thorlabs_rotation_testing.py`: connect by
 serial, wait for settings initialization, start polling, enable the channel,
 load the existing motor configuration, read the channel settings, verify the
-configured actuator profile, and apply the profile's velocity and acceleration.
+configured actuator profile, read its CCW/CW position limits, and apply the
+profile's velocity and acceleration. Those Kinesis limits become the
+authoritative rotation bounds.
 It does not change `DeviceSettingsName`, persist settings, home, or move during
 connection.
 
@@ -517,10 +534,11 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_models.py` | Required home order and `[x, y, z, theta]` pose ordering. |
 | `test_configuration.py` | Profile round trips, required components, software-limit validation, and JSON serialization. |
 | `test_simulated.py` | Connection and homing requirements, movement, limits, injected failures, and stop interruption. |
-| `test_services.py` | Home All, pose, motion tests, mosaic snake ordering, and path preflight. |
-| `test_gui.py` | Safe simulated startup, four panels, Identify, and explicit mosaic controls. |
+| `test_services.py` | Home All, pose, dual-tiling order, safe rotation transition, resume, failure, and full-path preflight. |
+| `test_gui.py` | Safe simulated startup, four panels, Identify, fixed attached viewer, and full-run controls. |
 | `test_configuration_dialog.py` | Structured fields, tooltips, validation, and profile file actions. |
-| `test_mosaic_progress_dialog.py` | Multi-plane tile layout, legend, and progress colors. |
+| `test_mosaic_progress_dialog.py` | Single current-grid layout, timing estimates, resume shading, and progress colors. |
+| `test_mosaic_setup_dialog.py` | Two-tiling geometry, endpoint rounding, live limits, and resume bounds. |
 | `test_mosaic_logging.py` | Timestamped mosaic filename and chronological event format. |
 | `test_diagnostics.py` | Non-motion diagnostics and the acknowledgement required for home or motion. |
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
@@ -677,18 +695,19 @@ logs/mosaics/YYYY_MM_DD_HH-mm-ss.log
 ```
 
 Every line contains a local ISO timestamp, event name, and compact JSON details.
-Events include mosaic start/failure/completion, tile indices and absolute XYZ
-targets, movement start and observed completion positions, reused positions,
-acknowledged disconnected-axis skips, settling and dwell boundaries, acquisition
-Ready/Done transitions, reset completion, timeout failures, and tile completion.
+Events include full-run and per-tiling start/failure/completion, resume tiling and
+tile, XY indices and controller-coordinate XY/Z/rotation targets, transition and
+acquisition movements, observed completion positions, reused positions, settling
+and dwell boundaries, acquisition Ready/Done transitions, timeout failures, and
+tile completion.
 Successful Digital Out writes include their pin states and source.
 
 Common errors:
 
 - **Not connected**: click Connect for that component first.
 - **Must be homed before movement**: use the explicit Home control.
-- **Destination outside software limits**: correct the requested position or
-  the validated profile; do not weaken limits merely to bypass the error.
+- **Destination outside device limits**: correct the requested reference
+  position after reviewing the limits reported by the connected device.
 - **Serial or address mismatch**: verify the physical device and JSON identity.
 - **Missing Kinesis DLL**: verify Kinesis installation and `dll_directory`.
 - **Settings initialization timed out**: stop and inspect the Thorlabs/Kinesis
