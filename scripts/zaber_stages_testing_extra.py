@@ -1,6 +1,6 @@
 """Basic interactive control of three Zaber linear stages.
 
-Fill in the serial port, serial numbers, limits, and motion parameters before
+Fill in the serial port, serial numbers, and motion parameters before
 running this script. Running it opens the configured serial port. It performs
 no home or movement command until the operator selects one action and enters
 the exact confirmation requested on screen.
@@ -26,13 +26,6 @@ EXPECTED_SERIALS = {
     "x": "128442",
     "y": "126569",
     #"z": "None",
-}
-
-# Review these software limits against the physical installation before motion.
-LIMITS_MM = {
-    "x": (0.0, 300.0),
-    "y": (0.0, 300.0),
-    "z": (0.0, 100.0),
 }
 
 # Conservative example motion parameters; verify them for the actual stages.
@@ -144,12 +137,6 @@ try:
             destination_mm = (
                 requested_mm if action == "absolute" else current_mm + requested_mm
             )
-            minimum_mm, maximum_mm = LIMITS_MM[axis_name]
-            if not minimum_mm <= destination_mm <= maximum_mm:
-                raise ValueError(
-                    f"Destination {destination_mm:.4f} mm is outside the configured "
-                    f"{axis_name.upper()} limits [{minimum_mm}, {maximum_mm}] mm"
-                )
             if not axis.is_homed():
                 raise RuntimeError(
                     f"{axis_name.upper()} movement refused because the stage is not homed"
@@ -163,6 +150,7 @@ try:
             if acknowledgement != expected:
                 raise RuntimeError("Movement cancelled: confirmation did not match")
 
+            # Submit the reviewed target without adding limits beyond the Zaber controller.
             axis.move_absolute(
                 destination_mm,
                 Units.LENGTH_MILLIMETRES,

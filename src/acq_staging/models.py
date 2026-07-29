@@ -274,13 +274,14 @@ class MosaicTilingSpec:
 
 @dataclass(frozen=True, slots=True)
 class MosaicSequenceSpec:
-    """Two tilings executed sequentially with a safe rotation-transition Z."""
+    """One required tiling and one optional tiling with a safe rotation-transition Z."""
 
     tiling_one: MosaicTilingSpec
     tiling_two: MosaicTilingSpec
     safe_transition_z_mm: float
     resume_tiling: int = 1
     resume_tile: int = 1
+    run_tiling_two: bool = True
 
     def __post_init__(self) -> None:
         # The first acquisition orientation is a locked part of the run contract.
@@ -288,8 +289,10 @@ class MosaicSequenceSpec:
             raise ValueError("tiling 1 rotation must be 0 degrees")
         if not isfinite(self.safe_transition_z_mm):
             raise ValueError("safe transition Z must be finite")
-        if self.resume_tiling not in (1, 2):
-            raise ValueError("resume tiling must be 1 or 2")
+        # Resume can target only a tiling that is enabled for this run.
+        if self.resume_tiling < 1 or self.resume_tiling > len(self.tilings):
+            allowed = "1 or 2" if self.run_tiling_two else "1 when tiling 2 is disabled"
+            raise ValueError(f"resume tiling must be {allowed}")
         active = self.tilings[self.resume_tiling - 1]
         if self.resume_tile < 1 or self.resume_tile > active.total_tiles:
             raise ValueError(
@@ -297,14 +300,16 @@ class MosaicSequenceSpec:
             )
 
     @property
-    def tilings(self) -> tuple[MosaicTilingSpec, MosaicTilingSpec]:
-        """Return both tilings in their mandatory execution order."""
-        return (self.tiling_one, self.tiling_two)
+    def tilings(self) -> tuple[MosaicTilingSpec, ...]:
+        """Return enabled tilings in their execution order."""
+        if self.run_tiling_two:
+            return (self.tiling_one, self.tiling_two)
+        return (self.tiling_one,)
 
     @property
     def total_tiles(self) -> int:
-        """Return the total destinations across both tilings."""
-        return self.tiling_one.total_tiles + self.tiling_two.total_tiles
+        """Return the total destinations across enabled tilings."""
+        return sum(tiling.total_tiles for tiling in self.tilings)
 
 
 class MosaicTilePhase(StrEnum):
@@ -317,7 +322,7 @@ class MosaicTilePhase(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MosaicProgress:
-    """Worker-safe progress event within a two-tiling sequence."""
+    """Worker-safe progress event within a mosaic sequence."""
 
     tiling_number: int
     number: int

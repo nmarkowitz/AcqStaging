@@ -16,9 +16,6 @@ class FakeAxis:
         self.homed = False
         self.busy = False
         self.moves: list[tuple[float, object, dict[str, object]]] = []
-        self.settings = SimpleNamespace(
-            get=lambda name, _unit: 0.0 if name == "limit.min" else 300.0
-        )
 
     def home(self, *, wait_until_idle: bool) -> None:
         assert wait_until_idle is False
@@ -89,7 +86,7 @@ def test_zaber_adapter_matches_serial_and_sends_units() -> None:
     assert connection.closed
 
 
-def test_zaber_adapter_uses_device_limits_instead_of_profile_placeholders() -> None:
+def test_zaber_adapter_delegates_travel_limits_to_controller() -> None:
     fake_axis = FakeAxis()
     device = SimpleNamespace(
         serial_number=1234,
@@ -113,7 +110,10 @@ def test_zaber_adapter_uses_device_limits_instead_of_profile_placeholders() -> N
 
     stage = ZaberLinearStage(AxisName.X, component, manager)
     stage.connect()
+    stage.home()
+    stage.move_absolute(400.0)
 
-    assert stage.get_limits() == LimitsConfig(0.0, 300.0)
+    assert stage.get_limits() is None
+    assert fake_axis.moves[-1][0] == 400.0
     stage.disconnect()
     assert connection.closed

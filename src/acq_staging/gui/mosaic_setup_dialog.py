@@ -1,10 +1,11 @@
-"""User-friendly editor for one two-tiling mosaic sequence."""
+"""User-friendly editor for a one- or two-tiling mosaic sequence."""
 
 from __future__ import annotations
 
 from math import isclose
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -29,29 +30,26 @@ from acq_staging.models import (
 
 
 class MosaicSetupDialog(QDialog):
-    """Collect two independent endpoint-defined XY tilings for one full run."""
+    """Collect one required and one optional endpoint-defined XY tiling."""
 
     def __init__(
         self,
         mosaic: MosaicConfig,
         components: dict[AxisName, ComponentConfig],
         current_pose: Pose,
-        axis_limits: dict[AxisName, LimitsConfig] | None = None,
+        axis_limits: dict[AxisName, LimitsConfig | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Set Up Two-Tiling Mosaic Run")
+        self.setWindowTitle("Set Up Mosaic Run")
         self.setModal(True)
         self.resize(1050, 620)
         self.validated_spec: MosaicSequenceSpec | None = None
         supplied_limits = axis_limits or {}
 
-        # Connected axes supply API limits; simulator ranges remain a safe offline fallback.
+        # Simulators retain configured bounds while physical axes remain application-unbounded.
         self.limits = {
-            axis: supplied_limits.get(
-                axis,
-                components[axis].limits or LimitsConfig(-1_000_000.0, 1_000_000.0),
-            )
+            axis: supplied_limits.get(axis, components[axis].limits)
             for axis in (AxisName.X, AxisName.Y, AxisName.Z, AxisName.ROTATION)
         }
         pose_values = current_pose.as_vector()
@@ -67,13 +65,20 @@ class MosaicSetupDialog(QDialog):
             )
         }
 
-        # Matching side-by-side cards make differences between both tilings easy to review.
+        # Matching side-by-side cards keep the optional second geometry available to review.
         self.fields: list[dict[str, QDoubleSpinBox]] = []
         self.summaries: list[QLabel] = []
+        self.tiling_groups: list[QGroupBox] = []
         tilings_layout = QHBoxLayout()
         for tiling_number in (1, 2):
             group = self._build_tiling_group(tiling_number, mosaic)
+            self.tiling_groups.append(group)
             tilings_layout.addWidget(group)
+
+        # Tiling 2 remains enabled by default to preserve existing run behavior.
+        self.run_tiling_two = QCheckBox("Run Tiling 2 after Tiling 1")
+        self.run_tiling_two.setObjectName("run_tiling_two")
+        self.run_tiling_two.setChecked(True)
 
         # Safe Z and resume controls apply to the complete automatic sequence.
         run_group = QGroupBox("Full-run controls")
@@ -110,10 +115,11 @@ class MosaicSetupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Configure both XY tilings together. Tiling 2 starts automatically only "
-                "after Tiling 1 completes successfully. All positions use controller home."
+                "Configure the required first XY tiling and optionally run Tiling 2 "
+                "after it completes successfully. All positions use controller home."
             )
         )
+        layout.addWidget(self.run_tiling_two)
         layout.addLayout(tilings_layout)
         layout.addWidget(run_group)
         layout.addWidget(self.sequence_summary)
@@ -138,27 +144,32 @@ class MosaicSetupDialog(QDialog):
         self.safe_z_box.valueChanged.connect(self._update_summary)
         self.resume_tiling.currentIndexChanged.connect(self._update_summary)
         self.resume_tile.valueChanged.connect(self._update_summary)
+        self.run_tiling_two.toggled.connect(self._set_tiling_two_enabled)
+        self._set_tiling_two_enabled(True)
         self._update_summary()
 
     def build_spec(self) -> MosaicSequenceSpec:
         """Build the validated full sequence currently displayed by the dialog."""
         tilings = (self._build_tiling(0), self._build_tiling(1))
-        # Outward rounding can pass a limit even though the entered stop was in range.
-        for tiling_number, tiling in enumerate(tilings, start=1):
+        enabled_tilings = tilings if self.run_tiling_two.isChecked() else tilings[:1]
+        # Only enabled tilings can block a run after outward endpoint rounding.
+        for tiling_number, tiling in enumerate(enabled_tilings, start=1):
             for axis, ending in zip(
                 (AxisName.X, AxisName.Y), tiling.ending, strict=True
             ):
-                if not self.limits[axis].contains(ending):
+                limits = self.limits[axis]
+                if limits is not None and not limits.contains(ending):
                     raise ValueError(
                         f"Tiling {tiling_number} rounded {axis.value.upper()} stop "
-                        f"{ending} is outside device limits"
+                        f"{ending} is outside simulation limits"
                     )
         return MosaicSequenceSpec(
             tilings[0],
             tilings[1],
             self.safe_z_box.value(),
-            self.resume_tiling.currentIndex() + 1,
-            self.resume_tile.value(),
+            resume_tiling=self.resume_tiling.currentIndex() + 1,
+            resume_tile=self.resume_tile.value(),
+            run_tiling_two=self.run_tiling_two.isChecked(),
         )
 
     def _build_tiling_group(self, tiling_number: int, mosaic: MosaicConfig) -> QGroupBox:
@@ -184,7 +195,11 @@ class MosaicSetupDialog(QDialog):
             step = QDoubleSpinBox()
             step.setObjectName(f"tiling_{tiling_number}_step_{axis.value}_mm")
             step.setDecimals(6)
-            step.setRange(0.000001, self.limits[axis].span)
+            limits = self.limits[axis]
+            step.setRange(
+                0.000001,
+                limits.span if limits is not None else float("inf"),
+            )
             step.setValue(
                 mosaic.step_x_mm if axis is AxisName.X else mosaic.step_y_mm
             )
@@ -232,12 +247,18 @@ class MosaicSetupDialog(QDialog):
         )
 
     @staticmethod
-    def _position_box(name: str, limits: LimitsConfig, suffix: str) -> QDoubleSpinBox:
-        """Create one controller-home coordinate editor bounded by live limits."""
+    def _position_box(
+        name: str,
+        limits: LimitsConfig | None,
+        suffix: str,
+    ) -> QDoubleSpinBox:
+        """Create a simulation-bounded or application-unbounded position editor."""
         box = QDoubleSpinBox()
         box.setObjectName(name)
         box.setDecimals(6)
-        box.setRange(limits.minimum, limits.maximum)
+        minimum = limits.minimum if limits is not None else float("-inf")
+        maximum = limits.maximum if limits is not None else float("inf")
+        box.setRange(minimum, maximum)
         box.setSingleStep(0.001)
         box.setSuffix(suffix)
         return box
@@ -251,8 +272,11 @@ class MosaicSetupDialog(QDialog):
             self.sequence_summary.setText(f"Invalid geometry: {exc}")
             return
 
-        # Each card exposes adjusted endpoints so outward rounding is never hidden.
+        # Each enabled card exposes adjusted endpoints so outward rounding is never hidden.
         for index, tiling in enumerate(tilings):
+            if index == 1 and not self.run_tiling_two.isChecked():
+                self.summaries[index].setText("Disabled for this run")
+                continue
             requested = (
                 self.fields[index]["stop_x"].value(),
                 self.fields[index]["stop_y"].value(),
@@ -278,11 +302,22 @@ class MosaicSetupDialog(QDialog):
             self.sequence_summary.setText(f"Invalid geometry: {exc}")
             return
         self.sequence_summary.setStyleSheet("")
+        tiling_count = len(spec.tilings)
         self.sequence_summary.setText(
-            f"Full run: {spec.total_tiles} total tiles; resume at Tiling "
+            f"Full run: {tiling_count} tiling{'s' if tiling_count > 1 else ''}, "
+            f"{spec.total_tiles} total tiles; resume at Tiling "
             f"{spec.resume_tiling}, tile {spec.resume_tile}; safe rotation Z "
             f"{spec.safe_transition_z_mm:.6f} mm."
         )
+
+    def _set_tiling_two_enabled(self, enabled: bool) -> None:
+        """Apply the optional-tiling choice to editing and restart controls."""
+        # A disabled second tiling cannot remain selected as the resume target.
+        self.tiling_groups[1].setEnabled(enabled)
+        if not enabled:
+            self.resume_tiling.setCurrentIndex(0)
+        self.resume_tiling.setEnabled(enabled)
+        self._update_summary()
 
     def _normalize_stop_fields(self, index: int) -> None:
         """Commit outward-rounded XY stops after the user finishes one geometry edit."""
@@ -292,13 +327,14 @@ class MosaicSetupDialog(QDialog):
             self._update_summary()
             return
 
-        # Update only endpoints that remain inside live limits; preflight reports the rest.
+        # Update endpoints within simulation bounds; physical fields remain unrestricted.
         fields = self.fields[index]
         for axis, stop_box, resolved_stop in (
             (AxisName.X, fields["stop_x"], tiling.end_x_mm),
             (AxisName.Y, fields["stop_y"], tiling.end_y_mm),
         ):
-            if self.limits[axis].contains(resolved_stop) and not isclose(
+            limits = self.limits[axis]
+            if (limits is None or limits.contains(resolved_stop)) and not isclose(
                 stop_box.value(), resolved_stop, rel_tol=0.0, abs_tol=0.0000005
             ):
                 stop_box.blockSignals(True)

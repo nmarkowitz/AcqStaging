@@ -20,12 +20,23 @@ from acq_staging.models import (
 )
 
 
-def sequence(resume_tiling: int = 1, resume_tile: int = 1) -> MosaicSequenceSpec:
+def sequence(
+    resume_tiling: int = 1,
+    resume_tile: int = 1,
+    run_tiling_two: bool = True,
+) -> MosaicSequenceSpec:
     first = MosaicTilingSpec.from_endpoints(1.0, 1.0, 0.0, 0.0, 2.0, 1.0, 5.0, 0.0)
     second = MosaicTilingSpec.from_endpoints(
         1.0, 1.0, 10.0, 10.0, 12.0, 11.0, 6.0, 45.0
     )
-    return MosaicSequenceSpec(first, second, 20.0, resume_tiling, resume_tile)
+    return MosaicSequenceSpec(
+        first,
+        second,
+        20.0,
+        resume_tiling,
+        resume_tile,
+        run_tiling_two,
+    )
 
 
 def progress(
@@ -83,6 +94,15 @@ def test_resume_from_tiling_two_marks_all_prior_work(qtbot: QtBot) -> None:
     assert view.overview.spec == sequence().tiling_two
     assert view.overview.tile_color((0, 0)) == RESUMED_COLOR
     assert view.cancel_button.isEnabled()
+
+
+def test_single_tiling_run_reports_single_completion(qtbot: QtBot) -> None:
+    view = MosaicProgressDialog(sequence(run_tiling_two=False))
+    qtbot.addWidget(view)
+
+    view.mark_finished()
+
+    assert view.status_label.text() == "Single-tiling mosaic run complete"
 
 
 def test_large_tilings_fit_without_scroll_or_child_tiles(qtbot: QtBot) -> None:

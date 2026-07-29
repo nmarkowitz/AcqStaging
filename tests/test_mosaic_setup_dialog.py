@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from PyQt6.QtWidgets import QDoubleSpinBox
 from pytestqt.qtbot import QtBot
@@ -67,6 +69,31 @@ def test_resume_selector_uses_selected_tiling_tile_count(qtbot: QtBot) -> None:
     assert dialog.resume_tile.maximum() == spec.tiling_two.total_tiles
 
 
+def test_setup_checkbox_disables_and_omits_second_tiling(qtbot: QtBot) -> None:
+    config = default_simulation_config()
+    dialog = MosaicSetupDialog(
+        config.mosaic,
+        config.components,
+        Pose(0.0, 0.0, 0.0, 0.0),
+        {AxisName.X: LimitsConfig(0.0, 1.0)},
+    )
+    qtbot.addWidget(dialog)
+
+    # Disabled Tiling 2 geometry cannot block or contribute to the selected run.
+    dialog.fields[1]["step_x"].setValue(0.3)
+    dialog.fields[1]["stop_x"].setValue(1.0)
+    dialog.resume_tiling.setCurrentIndex(1)
+    dialog.run_tiling_two.setChecked(False)
+    spec = dialog.build_spec()
+
+    assert not dialog.tiling_groups[1].isEnabled()
+    assert not dialog.resume_tiling.isEnabled()
+    assert dialog.resume_tiling.currentIndex() == 0
+    assert not spec.run_tiling_two
+    assert spec.tilings == (spec.tiling_one,)
+    assert spec.total_tiles == spec.tiling_one.total_tiles
+
+
 def test_setup_rejects_rounded_endpoint_beyond_live_limit(qtbot: QtBot) -> None:
     config = default_simulation_config()
     dialog = MosaicSetupDialog(
@@ -81,8 +108,33 @@ def test_setup_rejects_rounded_endpoint_beyond_live_limit(qtbot: QtBot) -> None:
     dialog.fields[0]["step_x"].setValue(0.3)
     dialog.fields[0]["stop_x"].editingFinished.emit()
 
-    # An outward endpoint beyond the live limit remains visible for correction.
+    # An outward endpoint beyond a simulation limit remains visible for correction.
     assert dialog.fields[0]["stop_x"].value() == 1.0
-    assert "outside device limits" in dialog.sequence_summary.text()
-    with pytest.raises(ValueError, match="outside device limits"):
+    assert "outside simulation limits" in dialog.sequence_summary.text()
+    with pytest.raises(ValueError, match="outside simulation limits"):
         dialog.build_spec()
+
+
+def test_physical_mosaic_editors_have_no_application_travel_bounds(
+    qtbot: QtBot,
+) -> None:
+    config = default_simulation_config()
+    components = {
+        axis: replace(component, limits=None)
+        for axis, component in config.components.items()
+    }
+    dialog = MosaicSetupDialog(
+        config.mosaic,
+        components,
+        Pose(0.0, 0.0, 0.0, 0.0),
+    )
+    qtbot.addWidget(dialog)
+
+    # Values beyond the former synthetic GUI range remain editable for vendor review.
+    dialog.fields[0]["stop_x"].setValue(2_000_000.0)
+    dialog.fields[1]["rotation"].setValue(720.0)
+    spec = dialog.build_spec()
+
+    assert dialog.fields[0]["stop_x"].value() == 2_000_000.0
+    assert spec.tiling_one.end_x_mm >= 2_000_000.0
+    assert spec.tiling_two.rotation_deg == 720.0

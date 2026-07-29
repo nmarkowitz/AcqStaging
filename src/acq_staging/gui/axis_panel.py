@@ -37,15 +37,13 @@ class AxisPanel(QGroupBox):
         self.position_label = QLabel("—")
         self.position_label.setObjectName(f"{axis.value}_position")
 
-        # Hardware ranges are replaced by API-reported limits after connection.
-        initial_limits = config.limits or LimitsConfig(-1_000_000.0, 1_000_000.0)
         self.target = QDoubleSpinBox()
-        self.target.setRange(initial_limits.minimum, initial_limits.maximum)
         self.target.setDecimals(4)
-        self.target.setValue(config.simulation_start)
         self.increment = QDoubleSpinBox()
-        self.increment.setRange(0.0001, initial_limits.span)
         self.increment.setDecimals(4)
+        # Simulators use configured bounds while hardware editors remain application-unbounded.
+        self.apply_limits(config.limits)
+        self.target.setValue(config.simulation_start)
         self.increment.setValue(config.motion.jog_increment)
 
         connect = QPushButton("Connect")
@@ -106,15 +104,16 @@ class AxisPanel(QGroupBox):
     def apply_config(self, config: ComponentConfig) -> None:
         """Update editable ranges and defaults for a newly loaded profile."""
         self.config = config
-        # A broad disconnected range avoids inventing physical travel before API discovery.
-        limits = config.limits or LimitsConfig(-1_000_000.0, 1_000_000.0)
-        self.target.setRange(limits.minimum, limits.maximum)
+        # Hardware profiles use unbounded editors because vendors own their travel limits.
+        self.apply_limits(config.limits)
         self.target.setValue(config.simulation_start)
-        self.increment.setRange(0.0001, limits.span)
         self.increment.setValue(config.motion.jog_increment)
 
-    def apply_limits(self, limits: LimitsConfig) -> None:
-        """Apply adapter-reported limits translated into the current reference frame."""
-        # Updating ranges clamps stale entries before they can become motion requests.
-        self.target.setRange(limits.minimum, limits.maximum)
-        self.increment.setRange(0.0001, limits.span)
+    def apply_limits(self, limits: LimitsConfig | None) -> None:
+        """Apply simulation limits or remove application bounds for physical hardware."""
+        # Infinite Qt bounds avoid inventing a software travel range for physical axes.
+        minimum = limits.minimum if limits is not None else float("-inf")
+        maximum = limits.maximum if limits is not None else float("inf")
+        span = limits.span if limits is not None else float("inf")
+        self.target.setRange(minimum, maximum)
+        self.increment.setRange(0.0001, span)

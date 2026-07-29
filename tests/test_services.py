@@ -9,6 +9,7 @@ from acq_staging.factory import build_simulation_axes
 from acq_staging.models import (
     HOME_ORDER,
     AxisName,
+    LimitsConfig,
     MosaicProgress,
     MosaicSequenceSpec,
     MosaicTilePhase,
@@ -28,6 +29,7 @@ def make_sequence(
     second_stop_x: float = 12.0,
     resume_tiling: int = 1,
     resume_tile: int = 1,
+    run_tiling_two: bool = True,
 ) -> MosaicSequenceSpec:
     first = MosaicTilingSpec.from_endpoints(
         1.0, 1.0, 0.0, 0.0, first_stop_x, 1.0, 5.0, 0.0
@@ -35,7 +37,14 @@ def make_sequence(
     second = MosaicTilingSpec.from_endpoints(
         1.0, 1.0, 10.0, 10.0, second_stop_x, 11.0, 6.0, 45.0
     )
-    return MosaicSequenceSpec(first, second, 20.0, resume_tiling, resume_tile)
+    return MosaicSequenceSpec(
+        first,
+        second,
+        20.0,
+        resume_tiling,
+        resume_tile,
+        run_tiling_two,
+    )
 
 
 def ready_service(config: AppConfig | None = None) -> MotionService:
@@ -55,6 +64,28 @@ def test_home_all_and_pose_order() -> None:
     for axis, destination in zip(HOME_ORDER, (1.0, 2.0, 3.0, 4.0), strict=True):
         service.move_absolute(axis, destination)
     assert service.pose.as_vector() == (1.0, 2.0, 3.0, 4.0)
+
+
+def test_service_delegates_unbounded_physical_move_to_adapter() -> None:
+    config = default_simulation_config()
+    # This fake accepts a broad range internally but exposes no application software limit.
+    component = replace(
+        config.components[AxisName.X],
+        limits=LimitsConfig(-1_000.0, 1_000.0),
+    )
+
+    class VendorLimitedFakeAxis(SimulatedMotionAxis):
+        def get_limits(self) -> LimitsConfig | None:
+            return None
+
+    axis = VendorLimitedFakeAxis(AxisName.X, component)
+    service = MotionService(config, {AxisName.X: axis})
+    service.connect(AxisName.X)
+    service.home(AxisName.X)
+
+    service.move_relative(AxisName.X, 1_400.0)
+
+    assert axis.get_position() == 400.0
 
 
 def test_home_all_stops_on_failure() -> None:
@@ -136,6 +167,38 @@ def test_sequence_runs_first_then_safe_rotation_transition_then_second() -> None
     assert progress[-1].phase is MosaicTilePhase.COMPLETE
 
 
+def test_sequence_skips_disabled_second_tiling_entirely() -> None:
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 30.0),
+    )
+    service = ready_service(config)
+    events: list[tuple[str, dict[str, object]]] = []
+    progress: list[MosaicProgress] = []
+    spec = make_sequence(
+        first_stop_x=0.0,
+        second_stop_x=400.0,
+        run_tiling_two=False,
+    )
+
+    planned = service.run_mosaic_sequence(
+        spec,
+        progress.append,
+        lambda event, data: events.append((event, data)),
+    )
+
+    assert len(planned) == 1
+    assert {item.tiling_number for item in progress} == {1}
+    starts = [details["tiling"] for event, details in events if event == "TILING_START"]
+    assert starts == [1]
+    full_run = next(details for event, details in events if event == "FULL_RUN_START")
+    audited_tilings = full_run["tilings"]
+    assert isinstance(audited_tilings, list)
+    assert len(audited_tilings) == 1
+    assert progress[-1].overall_total == spec.tiling_one.total_tiles
+    assert service.pose.as_vector() == (0.0, 1.0, 5.0, 0.0)
+
+
 def test_sequence_resume_from_second_skips_first_tiling() -> None:
     service = ready_service()
     events: list[tuple[str, dict[str, object]]] = []
@@ -156,7 +219,7 @@ def test_sequence_preflight_rejects_second_path_before_any_motion() -> None:
     service = ready_service()
     spec = make_sequence(second_stop_x=400.0)
 
-    with pytest.raises(MotionSafetyError, match="outside device limits"):
+    with pytest.raises(MotionSafetyError, match="outside simulation limits"):
         service.run_mosaic_sequence(spec)
 
     assert service.pose.as_vector() == (0.0, 0.0, 0.0, 0.0)

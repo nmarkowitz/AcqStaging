@@ -90,6 +90,8 @@ Primary references: `references/ni-examples/digital_in` and
 | 17 | Circular numbered digital I/O indicators | Complete (simulation-verified) |
 | 18 | In-place endpoint normalization after editing | Complete (simulation-verified) |
 | 19 | Recent-pace duration prediction | Complete (simulation-verified) |
+| 20 | Optional second mosaic tiling | In progress |
+| 21 | Delegate physical travel limits to vendor controllers | In progress |
 
 Every phase must pass:
 
@@ -178,13 +180,14 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Attach the all-axis position and mosaic-progress viewer to the main GUI.
 - [x] Add embedded cancellation and restart from a one-based tile number.
 - [x] Round endpoint spans outward while preserving configured step sizes.
-- [x] Replace physical profile limits with limits queried from vendor APIs.
+- [x] Remove physical profile limits and delegate physical travel enforcement
+  to vendor APIs and controllers.
 - [x] Run the complete simulated suite, Ruff, and mypy.
 
 ### Phase 15 — Sequential dual-rotation mosaics
 
 - [x] Define two independent endpoint-based XY tilings with fixed per-tiling Z.
-- [x] Fix Tiling 1 at 0 degrees and run user-configured Tiling 2 automatically.
+- [x] Fix Tiling 1 at 0 degrees and run user-configured Tiling 2 when enabled.
 - [x] Move through a configured safe Z before rotation changes.
 - [x] Resume by tiling and one-based tile, with progress shown in the attached viewer.
 - [x] Require all four axes connected/homed and preflight the complete path.
@@ -218,8 +221,38 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Estimate remaining time from a recent, linearly weighted eight-tile window.
 - [x] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 20 — Optional second mosaic tiling
+
+- [x] Add a default-checked checkbox that enables or disables Tiling 2.
+- [x] Exclude disabled Tiling 2 geometry from validation, totals, execution,
+  progress, restart selection, and audit events.
+- [ ] Run the complete simulated suite, Ruff, and mypy.
+
+### Phase 21 — Vendor-owned physical travel limits
+
+- [x] Remove application travel checks and GUI clamping from physical axes.
+- [x] Keep configured limits for simulation and preserve vendor-side Kinesis
+  and Zaber enforcement.
+- [ ] Run the complete simulated and fake suite, Ruff, and mypy.
+
 ## Current session
 
+- Removed application travel bounds from physical-axis GUI controls, service
+  preflight, and real adapters. Physical destinations now reach Zaber or
+  Kinesis unchanged so their existing controller limits remain authoritative;
+  simulations continue to enforce configured limits.
+- Focused physical-limit delegation verification passes with 40 tests; Ruff and
+  mypy pass. The complete suite reports 85 passed, 3 failed, and 1 hardware
+  guard deselected because the pre-existing deletion of
+  `configs/hardware.example.json` still breaks three configuration tests. No
+  hardware was accessed.
+- Added a default-checked **Run Tiling 2 after Tiling 1** checkbox. Clearing it
+  disables Tiling 2 editing and restart selection and omits that tiling from
+  validation, totals, execution, progress, and audit events.
+- Focused mosaic verification passes with 43 tests; Ruff and mypy pass. The
+  complete suite reports 81 passed, 3 failed, and 1 hardware guard deselected
+  because the pre-existing deletion of `configs/hardware.example.json` breaks
+  three configuration tests. No hardware was accessed.
 - Remaining-time prediction now favors up to eight recent tile durations so it
   adapts to changing movement or acquisition pace.
 - Removed the System Status and Health dashboard and all of its GUI hooks.
@@ -251,8 +284,8 @@ Hardware-marked tests are never run without an explicit user request.
 - Added an attached all-axis/mosaic viewer, Cancel Mosaic, user-defined origins,
   origin-relative motion and logs, sequential reset, and restart-tile selection.
 - Endpoint runs now extend incompatible endpoints outward to the next full step.
-- Schema 5 keeps explicit synthetic limits for simulations and derives physical
-  limits from Zaber and Kinesis APIs after connection.
+- Schema 5 introduced synthetic simulation limits and API-derived physical
+  limits; Phase 21 later removed application use of the physical values.
 - Normal verification: 76 passed, 1 hardware test deselected; Ruff and mypy
   pass. Vendor-limit tests use fakes only. No physical hardware was accessed.
 - Added `launch_gui()` and `GuiSession` for non-blocking interactive exploration
@@ -303,9 +336,8 @@ Hardware-marked tests are never run without an explicit user request.
   pass. Tests remain simulation/fake-only. No hardware was accessed.
 - Reconciled the production adapters with the working standalone Zaber and
   BSC101/HDR50 scripts without copying their automatic motion sequences.
-- Zaber connection now validates discovered serial/model identity and verifies
-  configured application limits against device-reported `limit.min` and
-  `limit.max` values.
+- Zaber connection validates discovered serial/model identity. Its earlier
+  application-side `limit.min`/`limit.max` enforcement was removed in Phase 21.
 - BSC101 connection now loads and reads the existing channel motor
   configuration, verifies the configured actuator settings name, and rejects
   undefined or invalid motor settings before motion is possible.

@@ -73,7 +73,7 @@ def test_hardware_example_keeps_bsc101_dll_path_in_profile() -> None:
     assert config.mosaic.operation_timeout_s == 3600.0
 
 
-def test_schema_four_hardware_limits_migrate_to_api_discovery() -> None:
+def test_schema_four_hardware_limits_migrate_to_vendor_enforcement() -> None:
     # Older physical profiles are accepted, but authored limits are discarded in memory.
     data = load_config(Path("configs/hardware.example.json")).to_dict()
     data["schema_version"] = 4

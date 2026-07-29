@@ -31,7 +31,8 @@ This software controls physical motion hardware.
 - Movement and motion tests require the component to be homed.
 - Home and Motion Test buttons require confirmation.
 - Home All always uses `X -> Y -> Z -> Rotation` and stops if one component fails.
-- Device-reported travel limits are checked before physical vendor movement commands.
+- Physical travel limits are enforced by Zaber and Kinesis, not duplicated by
+  application-side clamps or destination checks.
 - Normal automated tests use simulations or vendor fakes, never physical hardware.
 - Connecting Digital Out never writes a default level; output changes require
   the explicit **Apply Pin States** action.
@@ -171,21 +172,24 @@ end-to-end inter-process operation requires correctly wired NI-DAQ lines.
 X -> Y -> Z -> Rotation
 ```
 
-- **Start Mosaic** opens one setup window for two sequential XY tilings. Each
-  tiling has independent X/Y beginning and end positions, X/Y step sizes, and a
-  fixed Z position. Tiling 1 is fixed at 0 degrees; Tiling 2 has an editable
-  rotation angle.
+- **Start Mosaic** opens one setup window with a required Tiling 1 and an
+  optional Tiling 2. Each tiling has independent X/Y beginning and end
+  positions, X/Y step sizes, and a fixed Z position. Tiling 1 is fixed at
+  0 degrees; Tiling 2 has an editable rotation angle. **Run Tiling 2 after
+  Tiling 1** is checked by default; clear it to acquire only Tiling 1.
 - **Safe transition Z** is the Z position used before changing rotation between
   tilings. After rotation reaches its target, Z moves to that tiling's fixed
   acquisition position.
 - Endpoint geometry supports increasing or decreasing travel independently on
   X and Y. If an end is between valid steps, it is extended outward to the next
   complete step. The preview updates while typing; after editing finishes, the
-  adjusted value replaces the entered stop directly in its field. An adjustment
-  outside a live machine limit is left unchanged and shown as an error.
+  adjusted value replaces the entered stop directly in its field. In simulation,
+  an adjustment outside the configured synthetic range is left unchanged and
+  shown as an error; physical fields are not clamped by the application.
 - **Resume tiling** and **resume tile** skip completed work after a crash. Reuse
-  the same geometry and select tiling 1 or 2 plus its one-based tile number; the
-  mosaic audit log records both values.
+  the same geometry and select an enabled tiling plus its one-based tile number;
+  the mosaic audit log records both values. When Tiling 2 is disabled, resume is
+  fixed to Tiling 1.
 - The attached **Axis Locations and Mosaic** dock continuously displays all four
   controller positions and one fitted overview of the tiling currently running.
   The overview switches automatically when Tiling 2 begins and always keeps its
@@ -195,9 +199,11 @@ X -> Y -> Z -> Rotation
 - **Elapsed** and **Estimated remaining** appear after the second tile of the
   current tiling completes. They update after every later completed tile using
   that tiling's average completed-tile duration, and reset when Tiling 2 begins.
-- Start Mosaic requires X, Y, Z, and Rotation to be connected and homed. Both
-  complete paths, including the safe rotation transition, are checked against
-  adapter-reported limits before the first movement.
+- Start Mosaic requires X, Y, Z, and Rotation to be connected and homed.
+  Simulated paths are checked against their configured synthetic limits before
+  movement. Physical paths are submitted to Zaber or Kinesis without an
+  application travel-limit precheck, so the vendor controller remains the
+  authority.
 - **Cancel Mosaic** in the attached viewer and **Stop Mosaic** in the toolbar
   cancel waits and request a stop from X, Y, Z, and Rotation.
 - With acquisition handshaking enabled, each settled tile is held orange while
@@ -315,11 +321,12 @@ The major configuration sections are:
 - `acquisition_handshake`: optional movement-side Ready/Done line and timeout settings
 
 Schema-version-3 application profiles load with acquisition handshaking disabled.
-Schema-version-4 physical component limits are discarded during in-memory migration
-because schema 5 obtains those limits from the hardware APIs. Schema 6 removes
-obsolete Z-step and tile-count defaults now that each run defines two endpoint-based
-XY tilings with fixed Z. Migrated profiles save as schema version 6. Older profiles
-still require the documented `mosaic` and `digital_io` sections.
+Schema-version-4 physical component limits are discarded during in-memory
+migration because physical travel enforcement is delegated to the vendor API
+and controller. Schema 6 removes obsolete Z-step and tile-count defaults now
+that each run defines two endpoint-based XY tilings with fixed Z. Migrated
+profiles save as schema version 6. Older profiles still require the documented
+`mosaic` and `digital_io` sections.
 
 ### Digital I/O settings
 
@@ -346,18 +353,21 @@ do not change the active profile or a saved JSON file:
 - `step_x_mm` and `step_y_mm`: default distance between XY tile positions
 - `settling_time_s`: wait after reaching a tile before reporting it ready
 - `dwell_time_s`: optional motion-only placeholder wait at each tile
-- `operation_timeout_s`: maximum duration allowed for the full two-tiling run
+- `operation_timeout_s`: maximum duration allowed for the complete selected run
 
 The setup window defines both tilings with inclusive beginning/end controller
-coordinates. The application derives each XY direction from the entered points.
-A non-divisible span is extended outward to the next whole unchanged step, while
-equal points produce one position.
+coordinates. Clearing **Run Tiling 2 after Tiling 1** disables its controls and
+excludes its geometry, tiles, and limits from the run. The application derives
+each XY direction from the entered points. A non-divisible span is extended
+outward to the next whole unchanged step, while equal points produce one
+position.
 
-Each tiling snakes across X and advances Y after each row while Z remains fixed.
-Tiling 2 begins automatically only after Tiling 1 completes successfully. When
-the rotation target changes, the service moves Z to Safe transition Z, changes
-rotation, then moves Z to the next fixed acquisition position. The successful
-run ends at Tiling 2's last tile rather than returning home.
+Each enabled tiling snakes across X and advances Y after each row while Z
+remains fixed. If selected, Tiling 2 begins automatically only after Tiling 1
+completes successfully. When the rotation target changes, the service moves Z
+to Safe transition Z, changes rotation, then moves Z to the next fixed
+acquisition position. The successful run ends at the last enabled tiling's last
+tile rather than returning home.
 
 The legacy tilt-mosaic, vibratome, dual-Z, cut, notification, and acquisition
 parameters are intentionally excluded. Only acquisition coordination signals are in scope.
@@ -415,18 +425,20 @@ The Thorlabs rotation component uses:
 - `dll_directory`: the local Kinesis installation directory; it is never
   hardcoded by the adapter
 
-When a real Zaber component connects, the adapter discovers the daisy chain,
-matches the configured serial number, and reads `limit.min` and `limit.max` in
-millimetres. Those device settings become the authoritative motion and GUI
-entry bounds; hardware profiles do not duplicate them.
+When a real Zaber component connects, the adapter discovers the daisy chain and
+matches the configured serial number. The application does not add a travel
+limit or clamp GUI entries. Requested positions are passed to Zaber Motion
+Library with explicit units, velocity, and acceleration, leaving the controller
+and vendor library responsible for rejecting invalid travel.
 
 When the BSC101 rotation component connects, the adapter follows the verified
 channel-1 sequence from `scripts/thorlabs_rotation_testing.py`: connect by
 serial, wait for settings initialization, start polling, enable the channel,
 load the existing motor configuration, read the channel settings, verify the
-configured actuator profile, read its CCW/CW position limits, and apply the
-profile's velocity and acceleration. Those Kinesis limits become the
-authoritative rotation bounds.
+configured actuator profile, and apply the profile's velocity and acceleration.
+The application does not add a rotation limit or clamp GUI entries. Requested
+positions are passed to `MoveTo`, leaving the existing Kinesis configuration to
+enforce its own limits.
 It does not change `DeviceSettingsName`, persist settings, home, or move during
 connection.
 
@@ -538,7 +550,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_gui.py` | Safe simulated startup, four panels, Identify, fixed attached viewer, and full-run controls. |
 | `test_configuration_dialog.py` | Structured fields, tooltips, validation, and profile file actions. |
 | `test_mosaic_progress_dialog.py` | Single current-grid layout, timing estimates, resume shading, and progress colors. |
-| `test_mosaic_setup_dialog.py` | Two-tiling geometry, endpoint rounding, live limits, and resume bounds. |
+| `test_mosaic_setup_dialog.py` | Two-tiling geometry, endpoint rounding, simulation limits, and unbounded hardware fields. |
 | `test_mosaic_logging.py` | Timestamped mosaic filename and chronological event format. |
 | `test_diagnostics.py` | Non-motion diagnostics and the acknowledgement required for home or motion. |
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
@@ -706,8 +718,9 @@ Common errors:
 
 - **Not connected**: click Connect for that component first.
 - **Must be homed before movement**: use the explicit Home control.
-- **Destination outside device limits**: correct the requested reference
-  position after reviewing the limits reported by the connected device.
+- **Destination outside simulation limits**: correct the requested position in
+  a simulated profile. Physical travel-limit errors come directly from Zaber or
+  Kinesis and must be resolved in the corresponding vendor configuration.
 - **Serial or address mismatch**: verify the physical device and JSON identity.
 - **Missing Kinesis DLL**: verify Kinesis installation and `dll_directory`.
 - **Settings initialization timed out**: stop and inspect the Thorlabs/Kinesis

@@ -55,3 +55,18 @@ def test_sequence_requires_zero_degree_first_tiling() -> None:
 def test_sequence_resume_tile_must_fit_selected_tiling() -> None:
     with pytest.raises(ValueError, match="between 1 and 9"):
         MosaicSequenceSpec(tiling(), tiling(45.0), 20.0, resume_tiling=2, resume_tile=10)
+
+
+def test_sequence_can_disable_second_tiling() -> None:
+    spec = MosaicSequenceSpec(tiling(), tiling(45.0), 20.0, run_tiling_two=False)
+
+    assert spec.tilings == (spec.tiling_one,)
+    assert spec.total_tiles == spec.tiling_one.total_tiles
+    with pytest.raises(ValueError, match="tiling 2 is disabled"):
+        MosaicSequenceSpec(
+            tiling(),
+            tiling(45.0),
+            20.0,
+            resume_tiling=2,
+            run_tiling_two=False,
+        )

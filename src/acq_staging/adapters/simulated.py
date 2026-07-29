@@ -114,7 +114,7 @@ class SimulatedMotionAxis:
         with self._lock:
             return self._position
 
-    def get_limits(self) -> LimitsConfig:
+    def get_limits(self) -> LimitsConfig | None:
         """Return the simulator-defined travel range without requiring connection."""
         return self._limits
 

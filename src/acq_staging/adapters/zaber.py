@@ -110,7 +110,6 @@ class ZaberLinearStage:
         self.manager = manager
         self._device: Any | None = None
         self._axis: Any | None = None
-        self._device_limits: tuple[float, float] | None = None
         self._error: str | None = None
 
     def connect(self) -> None:
@@ -144,21 +143,8 @@ class ZaberLinearStage:
                     f"{self.axis_name.value}: expected model "
                     f"{self.config.expected_model}, got {model}"
                 )
-            # Read authoritative travel limits from the connected axis settings.
-            device_minimum = float(
-                axis.settings.get("limit.min", Units.LENGTH_MILLIMETRES)
-            )
-            device_maximum = float(
-                axis.settings.get("limit.max", Units.LENGTH_MILLIMETRES)
-            )
-            if device_minimum >= device_maximum:
-                raise AdapterError(
-                    f"{self.axis_name.value}: invalid device limits "
-                    f"[{device_minimum}, {device_maximum}] mm"
-                )
             self._device = device
             self._axis = axis
-            self._device_limits = (device_minimum, device_maximum)
             self._error = None
         except Exception:
             # Undo the shared-port reference count after any partial setup failure.
@@ -170,7 +156,6 @@ class ZaberLinearStage:
             return
         self._axis = None
         self._device = None
-        self._device_limits = None
         self.manager.release(self._connection_id)
 
     def identity(self) -> ComponentIdentity:
@@ -223,8 +208,6 @@ class ZaberLinearStage:
                 self._axis.stop(wait_until_idle=False)
 
     def move_absolute(self, destination: float) -> None:
-        # Check application limits before issuing any vendor movement command.
-        self._validate_destination(destination)
         axis = self._require_axis()
         with self.manager.command(self._connection_id):
             homed = axis.is_homed()
@@ -250,11 +233,9 @@ class ZaberLinearStage:
         with self.manager.command(self._connection_id):
             return float(self._require_axis().get_position(Units.LENGTH_MILLIMETRES))
 
-    def get_limits(self) -> LimitsConfig:
-        """Return the connected device's internally reported travel limits."""
-        if self._axis is None or self._device_limits is None:
-            raise AdapterError(f"{self.axis_name.value}: limits unavailable while disconnected")
-        return LimitsConfig(*self._device_limits)
+    def get_limits(self) -> LimitsConfig | None:
+        """Return no application limit so the Zaber controller owns travel enforcement."""
+        return None
 
     @property
     def _connection_id(self) -> str:
@@ -271,12 +252,6 @@ class ZaberLinearStage:
         if self._device is None:
             raise AdapterError(f"{self.axis_name.value}: not connected")
         return self._device
-
-    def _validate_destination(self, destination: float) -> None:
-        if not self.get_limits().contains(destination):
-            raise MotionSafetyError(
-                f"{self.axis_name.value}: destination outside device limits"
-            )
 
     def _wait_until_idle(self) -> None:
         # Poll explicitly so application timeouts can stop an uncompleted operation.

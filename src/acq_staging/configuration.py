@@ -86,7 +86,7 @@ class ComponentConfig:
         connections: dict[str, ZaberConnectionConfig],
     ) -> None:
         field = f"components.{axis.value}"
-        # Only simulators define travel in a profile; hardware adapters query the device API.
+        # Only simulators define application travel; hardware delegates limits to vendors.
         if self.adapter is AdapterType.SIMULATED:
             if self.limits is None:
                 raise ConfigurationError(f"{field}.limits: required for simulation")

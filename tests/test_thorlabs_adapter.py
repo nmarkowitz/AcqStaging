@@ -24,9 +24,7 @@ class FakeChannel:
         self.identified = False
         self.IsActuatorDefined = True
         self.IsMotorSettingsValid = True
-        self.MotorDeviceSettings = SimpleNamespace(
-            Limit=SimpleNamespace(CCWSoftLimitUnit=0.0, CWSoftLimitUnit=360.0)
-        )
+        self.MotorDeviceSettings = SimpleNamespace()
         self.settings_read = False
         self.configuration_updated = False
 
@@ -142,15 +140,16 @@ def test_bsc101_adapter_uses_channel_one_and_callback_motion() -> None:
     stage.connect()
     stage.identify()
     stage.home()
-    stage.move_absolute(45.0)
+    stage.move_absolute(720.0)
 
     assert facade.controller.connected_serial == "40000001"
     assert facade.controller.requested_channel == 1
     assert facade.channel.identified
     assert facade.channel.settings_read
     assert facade.channel.configuration_updated
-    assert stage.get_position() == 45.0
-    assert stage.get_limits() == LimitsConfig(0.0, 360.0)
+    # The adapter forwards targets beyond reported settings and leaves Kinesis in control.
+    assert stage.get_position() == 720.0
+    assert stage.get_limits() is None
     assert stage.identity().model == "BSC101"
 
     stage.disconnect()

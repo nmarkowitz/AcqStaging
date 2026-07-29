@@ -301,7 +301,7 @@ class AxisMosaicView(QWidget):
         header.addStretch()
         header.addWidget(self.cancel_button)
 
-        # A single overview is reused when the automatic sequence changes tilings.
+        # A single overview is reused if the automatic sequence changes tilings.
         self.overview = MosaicOverview(self)
         self.tiling_group = QGroupBox("Current tiling", self)
         tiling_layout = QVBoxLayout(self.tiling_group)
@@ -322,7 +322,7 @@ class AxisMosaicView(QWidget):
         timing.addWidget(self.remaining_label)
         timing.addStretch()
 
-        # A fixed legend documents the semantic shading shared by both rectangles.
+        # A fixed legend documents the semantic shading shared by every tiling.
         legend = QHBoxLayout()
         legend.addWidget(QLabel("Legend:"))
         for text, color in (
@@ -383,7 +383,10 @@ class AxisMosaicView(QWidget):
     def mark_finished(self) -> None:
         """Complete the visible overview and show successful full-run completion."""
         self.overview.mark_finished()
-        self.status_label.setText("Two-tiling mosaic run complete")
+        if self.run_spec is not None and self.run_spec.run_tiling_two:
+            self.status_label.setText("Two-tiling mosaic run complete")
+        else:
+            self.status_label.setText("Single-tiling mosaic run complete")
         self.cancel_button.setEnabled(False)
 
     def mark_failed(self, message: str) -> None:

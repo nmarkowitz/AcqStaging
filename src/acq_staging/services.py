@@ -53,7 +53,7 @@ class TileAcquisitionHandshake(Protocol):
 
 
 class MotionService:
-    """Coordinate controller-home motion and preflighted two-tiling sequences."""
+    """Coordinate controller-home motion and preflighted mosaic sequences."""
 
     def __init__(
         self,
@@ -78,8 +78,8 @@ class MotionService:
         """Return adapter status in controller-home coordinates."""
         return self._axis(axis).status()
 
-    def axis_limits(self, axis: AxisName) -> LimitsConfig:
-        """Return authoritative adapter-reported controller limits."""
+    def axis_limits(self, axis: AxisName) -> LimitsConfig | None:
+        """Return configured simulation limits or no application limit for hardware."""
         return self._axis(axis).get_limits()
 
     def connect(self, axis: AxisName) -> None:
@@ -135,9 +135,12 @@ class MotionService:
 
     def move_absolute(self, axis: AxisName, destination: float) -> None:
         """Move one homed axis to a controller-home destination."""
-        if not self._axis(axis).get_limits().contains(destination):
-            raise MotionSafetyError(f"{axis.value}: destination outside device limits")
-        self._axis(axis).move_absolute(destination)
+        adapter = self._axis(axis)
+        limits = adapter.get_limits()
+        # Simulations enforce their synthetic range while hardware delegates to its vendor.
+        if limits is not None and not limits.contains(destination):
+            raise MotionSafetyError(f"{axis.value}: destination outside simulation limits")
+        adapter.move_absolute(destination)
         self.refresh_position(axis)
 
     def move_relative(self, axis: AxisName, displacement: float) -> None:
@@ -185,7 +188,12 @@ class MotionService:
         distance = config.motion.test_distance
         # Prefer positive travel, falling back to negative travel near the upper limit.
         candidates = (start + distance, start - distance)
-        target = next((value for value in candidates if adapter.get_limits().contains(value)), None)
+        limits = adapter.get_limits()
+        target = (
+            candidates[0]
+            if limits is None
+            else next((value for value in candidates if limits.contains(value)), None)
+        )
         if target is None:
             raise MotionSafetyError(f"{axis.value}: no safe direction for motion test")
         # Always request return-to-start even if destination verification fails.
@@ -267,7 +275,7 @@ class MotionService:
     def plan_mosaic_sequence(
         self,
         spec: MosaicSequenceSpec,
-    ) -> tuple[list[MosaicTile], list[MosaicTile]]:
+    ) -> tuple[list[MosaicTile], ...]:
         """Preflight every transition and tile before the first motion command."""
         # A full run never bypasses connection or homing for any participating axis.
         disconnected, unhomed = self.mosaic_readiness()
@@ -278,29 +286,35 @@ class MotionService:
             names = ", ".join(axis.value for axis in unhomed)
             raise MotionSafetyError(f"mosaic requires homed axes: {names}")
 
-        # Transition Z and both fixed Z/rotation targets must fit live device limits.
+        # Simulations preflight configured ranges; hardware delegates all limits to vendors.
         z_limits = self.axis_limits(AxisName.Z)
         rotation_limits = self.axis_limits(AxisName.ROTATION)
-        if not z_limits.contains(spec.safe_transition_z_mm):
-            raise MotionSafetyError("safe transition Z is outside device limits")
+        if z_limits is not None and not z_limits.contains(spec.safe_transition_z_mm):
+            raise MotionSafetyError("safe transition Z is outside simulation limits")
         for number, tiling in enumerate(spec.tilings, start=1):
-            if not z_limits.contains(tiling.z_mm):
-                raise MotionSafetyError(f"tiling {number} Z is outside device limits")
-            if not rotation_limits.contains(tiling.rotation_deg):
-                raise MotionSafetyError(f"tiling {number} rotation is outside device limits")
+            if z_limits is not None and not z_limits.contains(tiling.z_mm):
+                raise MotionSafetyError(f"tiling {number} Z is outside simulation limits")
+            if rotation_limits is not None and not rotation_limits.contains(
+                tiling.rotation_deg
+            ):
+                raise MotionSafetyError(
+                    f"tiling {number} rotation is outside simulation limits"
+                )
 
-        planned = (
-            self.plan_mosaic_tiling(spec.tiling_one, 0),
-            self.plan_mosaic_tiling(spec.tiling_two, 1),
+        # Disabled tilings are omitted before any geometry or motion is considered.
+        planned = tuple(
+            self.plan_mosaic_tiling(tiling, tiling_index)
+            for tiling_index, tiling in enumerate(spec.tilings)
         )
         # Checking all XY destinations up front prevents partial acquisition on bad geometry.
         for number, tiles in enumerate(planned, start=1):
             for tile in tiles:
                 for axis, destination in ((AxisName.X, tile.x_mm), (AxisName.Y, tile.y_mm)):
-                    if not self.axis_limits(axis).contains(destination):
+                    limits = self.axis_limits(axis)
+                    if limits is not None and not limits.contains(destination):
                         raise MotionSafetyError(
                             f"tiling {number} tile ({tile.x_index}, {tile.y_index}) places "
-                            f"{axis.value}={destination} outside device limits"
+                            f"{axis.value}={destination} outside simulation limits"
                         )
         return planned
 
@@ -309,8 +323,8 @@ class MotionService:
         spec: MosaicSequenceSpec,
         on_progress: Callable[[MosaicProgress], None] | None = None,
         on_event: Callable[[str, dict[str, object]], None] | None = None,
-    ) -> tuple[list[MosaicTile], list[MosaicTile]]:
-        """Run two preflighted tilings sequentially under one timeout and handshake."""
+    ) -> tuple[list[MosaicTile], ...]:
+        """Run enabled preflighted tilings sequentially under one timeout and handshake."""
         if not self._mosaic_lock.acquire(blocking=False):
             raise MotionSafetyError("a mosaic sequence is already running")
         self._mosaic_stop.clear()
@@ -321,14 +335,14 @@ class MotionService:
             planned = self.plan_mosaic_sequence(spec)
             handshake = self.acquisition_handshake
             if handshake is not None and handshake.enabled:
-                # DAQ ownership is acquired once and retained across both tilings.
+                # DAQ ownership is acquired once and retained across all enabled tilings.
                 handshake.begin()
                 handshake_started = True
             if on_event is not None:
                 on_event("FULL_RUN_START", self._sequence_details(spec, handshake_started))
 
             # Resume skips all earlier work while retaining absolute traversal numbering.
-            for tiling_index in range(spec.resume_tiling - 1, 2):
+            for tiling_index in range(spec.resume_tiling - 1, len(spec.tilings)):
                 tiling_number = tiling_index + 1
                 active_tiling = tiling_number
                 tiling = spec.tilings[tiling_index]

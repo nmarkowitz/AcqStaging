@@ -1,11 +1,16 @@
+from dataclasses import replace
+from math import isinf
+
 import pytest
 from PyQt6.QtWidgets import QApplication, QDockWidget, QPushButton
 from pytestqt.qtbot import QtBot
 
+from acq_staging.configuration import default_simulation_config
+from acq_staging.gui.axis_panel import AxisPanel
 from acq_staging.gui.dummy_acquirer_window import DummyAcquirerWindow
 from acq_staging.gui.main_window import MainWindow
 from acq_staging.gui.workers import FunctionWorker
-from acq_staging.models import AxisName, DigitalDirection, DigitalStatus
+from acq_staging.models import AdapterType, AxisName, DigitalDirection, DigitalStatus
 
 
 def test_main_window_starts_in_safe_simulation(qtbot: QtBot) -> None:
@@ -25,6 +30,21 @@ def test_window_has_four_independent_panels(qtbot: QtBot) -> None:
         assert identify is not None
         assert identify.text() == "Identify"
     assert QApplication.instance() is not None
+
+
+def test_physical_axis_panel_has_no_application_travel_bounds(qtbot: QtBot) -> None:
+    config = default_simulation_config().components[AxisName.ROTATION]
+    component = replace(
+        config,
+        adapter=AdapterType.THORLABS_BSC101,
+        limits=None,
+    )
+    panel = AxisPanel(AxisName.ROTATION, component)
+    qtbot.addWidget(panel)
+
+    assert isinf(panel.target.minimum()) and panel.target.minimum() < 0
+    assert isinf(panel.target.maximum()) and panel.target.maximum() > 0
+    assert isinf(panel.increment.maximum())
 
 
 def test_window_exposes_explicit_mosaic_controls(qtbot: QtBot) -> None:
@@ -131,6 +151,35 @@ def test_full_mosaic_confirmation_passes_one_sequence(
     window._confirm_mosaic(((), ()))
 
     assert runs == [run_spec]
+
+
+def test_single_tiling_confirmation_omits_second_geometry(
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.service.connect_all()
+    window.service.home_all()
+    run_spec = replace(
+        window.service.default_mosaic_sequence_spec(),
+        run_tiling_two=False,
+    )
+    confirmations: list[tuple[str, str]] = []
+    monkeypatch.setattr(window, "_get_mosaic_run_spec", lambda: run_spec)
+
+    def reject_after_capture(title: str, text: str) -> bool:
+        confirmations.append((title, text))
+        return False
+
+    monkeypatch.setattr(window, "_confirm", reject_after_capture)
+
+    window._confirm_mosaic(((), ()))
+
+    title, text = confirmations[0]
+    assert "single-tiling" in title
+    assert "Tiling 1:" in text
+    assert "Tiling 2:" not in text
 
 
 def test_dummy_acquirer_window_starts_disconnected_with_explicit_controls(

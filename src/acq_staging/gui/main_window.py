@@ -360,20 +360,30 @@ class MainWindow(QMainWindow):
             if self.config.acquisition_handshake.enabled
             else " Acquisition handshaking is disabled; dwell timing will be used."
         )
-        first, second = run_spec.tilings
+        # Confirmation describes only the tilings selected for this run.
+        first = run_spec.tiling_one
+        tiling_text = (
+            f"Tiling 1: XY {first.beginning} to {first.ending}, Z={first.z_mm}, "
+            "rotation=0°."
+        )
+        if run_spec.run_tiling_two:
+            second = run_spec.tiling_two
+            tiling_text += (
+                f" Tiling 2: XY {second.beginning} to {second.ending}, "
+                f"Z={second.z_mm}, rotation={second.rotation_deg}°."
+            )
+        run_kind = "two-tiling" if run_spec.run_tiling_two else "single-tiling"
         if self._confirm(
-            "Confirm two-tiling motion",
+            f"Confirm {run_kind} motion",
             f"Run {run_spec.total_tiles} total tiles starting at Tiling "
             f"{run_spec.resume_tiling}, tile {run_spec.resume_tile}? "
-            f"Tiling 1: XY {first.beginning} to {first.ending}, Z={first.z_mm}, "
-            f"rotation=0°. Tiling 2: XY {second.beginning} to {second.ending}, "
-            f"Z={second.z_mm}, rotation={second.rotation_deg}°. Rotation changes "
-            f"use safe Z={run_spec.safe_transition_z_mm} mm.{handshake_text}",
+            f"{tiling_text} Any required rotation change uses safe "
+            f"Z={run_spec.safe_transition_z_mm} mm.{handshake_text}",
         ):
             self._run_mosaic(run_spec)
 
     def _get_mosaic_run_spec(self) -> MosaicSequenceSpec | None:
-        """Show the two-tiling editor and return its validated sequence."""
+        """Show the mosaic editor and return its validated enabled sequence."""
         dialog = MosaicSetupDialog(
             self.config.mosaic,
             self.config.components,
@@ -417,7 +427,7 @@ class MainWindow(QMainWindow):
         self.axis_mosaic_view.prepare_run(run_spec)
         self._mosaic_had_error = False
 
-        def execute() -> tuple[list[MosaicTile], list[MosaicTile]]:
+        def execute() -> tuple[list[MosaicTile], ...]:
             # Audit callbacks run synchronously in this worker for precise ordering.
             return self.service.run_mosaic_sequence(
                 run_spec,
@@ -582,9 +592,8 @@ class MainWindow(QMainWindow):
     def _refresh_display(self) -> None:
         for axis, panel in self.panels.items():
             panel.update_status(self.service.component_status(axis))
-            # Connected adapters replace profile placeholders with live device limits.
-            with suppress(Exception):
-                panel.apply_limits(self.service.axis_limits(axis))
+            # Simulations retain synthetic bounds while hardware editors stay unbounded.
+            panel.apply_limits(self.service.axis_limits(axis))
         for direction, digital_panel in self.digital_panels.items():
             digital_panel.update_status(self.digital_service.status(direction))
         self._show_pose(self.service.pose)

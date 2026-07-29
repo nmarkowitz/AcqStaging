@@ -91,7 +91,6 @@ class ThorlabsBSC101Stage:
         self._controller: Any | None = None
         self._channel: Any | None = None
         self._motor_configuration: Any | None = None
-        self._device_limits: tuple[float, float] | None = None
         self._error: str | None = None
 
     def connect(self) -> None:
@@ -139,22 +138,9 @@ class ThorlabsBSC101Stage:
                 raise AdapterError("rotation: Kinesis actuator is not defined")
             if not bool(channel.IsMotorSettingsValid):
                 raise AdapterError("rotation: Kinesis motor settings are invalid")
-            # Kinesis exposes the configured stage range through channel motor settings.
-            counterclockwise = self.facade.dec2float(
-                motor_settings.Limit.CCWSoftLimitUnit
-            )
-            clockwise = self.facade.dec2float(motor_settings.Limit.CWSoftLimitUnit)
-            device_minimum = min(counterclockwise, clockwise)
-            device_maximum = max(counterclockwise, clockwise)
-            if device_minimum >= device_maximum:
-                raise AdapterError(
-                    "rotation: Kinesis reported invalid stage limits "
-                    f"[{device_minimum}, {device_maximum}] deg"
-                )
             self._controller = controller
             self._channel = channel
             self._motor_configuration = motor_configuration
-            self._device_limits = (device_minimum, device_maximum)
             self._error = None
         except Exception:
             # A partial connection must still stop polling and release the controller.
@@ -172,7 +158,6 @@ class ThorlabsBSC101Stage:
         controller, self._controller = self._controller, None
         channel, self._channel = self._channel, None
         self._motor_configuration = None
-        self._device_limits = None
         try:
             if channel is not None:
                 channel.StopPolling()
@@ -224,7 +209,7 @@ class ThorlabsBSC101Stage:
 
     def move_absolute(self, destination: float) -> None:
         self._require_homed()
-        self._validate_destination(destination)
+        # Kinesis receives the requested target and retains its own configured safeguards.
         value = self.facade.decimal(destination)
         self._run_callback_operation(
             lambda callback: self._require_channel().MoveTo(value, callback)
@@ -236,11 +221,9 @@ class ThorlabsBSC101Stage:
     def get_position(self) -> float:
         return self.facade.dec2float(self._require_channel().Position)
 
-    def get_limits(self) -> LimitsConfig:
-        """Return Kinesis limits loaded from the attached stage configuration."""
-        if self._channel is None or self._device_limits is None:
-            raise AdapterError("rotation: limits unavailable while disconnected")
-        return LimitsConfig(*self._device_limits)
+    def get_limits(self) -> LimitsConfig | None:
+        """Return no application limit so Kinesis owns rotation-limit enforcement."""
+        return None
 
     def _require_channel(self) -> Any:
         if self._channel is None:
@@ -250,10 +233,6 @@ class ThorlabsBSC101Stage:
     def _require_homed(self) -> None:
         if not self.status().homed:
             raise MotionSafetyError("rotation: must be homed before movement")
-
-    def _validate_destination(self, destination: float) -> None:
-        if not self.get_limits().contains(destination):
-            raise MotionSafetyError("rotation: destination outside device limits")
 
     def _run_callback_operation(self, start: Any) -> None:
         # Adapt Kinesis callbacks into a blocking worker-thread wait with a timeout.
