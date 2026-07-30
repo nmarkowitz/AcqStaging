@@ -117,11 +117,11 @@
     "digital_in": {
       "enabled": true,
       "adapter": "nidaqmx",
-      "device": "Dev2",
+      "device": "Dev1",
       "port": "P0",
-      "line_count": 1,
+      "line_count": 8,
       "lines": [
-        0
+        7
       ],
       "operation_timeout_s": 10.0,
       "polling_interval_ms": 250
@@ -130,8 +130,8 @@
       "enabled": true,
       "adapter": "nidaqmx",
       "device": "Dev1",
-      "port": "P1",
-      "line_count": 1,
+      "port": "P0",
+      "line_count": 8,
       "lines": [
         0
       ],
@@ -140,9 +140,9 @@
     }
   },
   "acquisition_handshake": {
-    "enabled": false,
+    "enabled": true,
     "ready_output_line": 0,
-    "complete_input_line": 0,
+    "complete_input_line": 7,
     "acquisition_timeout_s": 300.0,
     "reset_timeout_s": 30.0,
     "polling_interval_ms": 20

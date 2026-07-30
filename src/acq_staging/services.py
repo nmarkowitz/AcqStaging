@@ -708,28 +708,63 @@ class DigitalIOService:
                     },
                 )
 
-    def begin_handshake(self, input_line: int, output_line: int) -> None:
-        """Reserve the output port after verifying both handshake lines are idle LOW."""
+    def begin_handshake(
+        self,
+        input_line: int,
+        output_line: int,
+        *,
+        input_idle_state: bool,
+        output_idle_state: bool,
+        initialize_output: bool = False,
+    ) -> None:
+        """Establish requested idle levels and reserve Digital Out for a handshake."""
         with self._lock:
             if self._handshake_active:
                 raise MotionSafetyError("a DAQ handshake is already active")
-            # A fresh input read rejects disconnected or stale acquisition completion.
-            inputs = self.read_inputs()
+
+            # Confirm the output task and selected handshake line exist before any write.
             output = self.status(DigitalDirection.OUTPUT)
             if not output.connected:
                 raise MotionSafetyError("digital_out must be connected for acquisition")
-            if inputs.get(input_line) is not False:
+            if output_line not in output.states:
                 raise MotionSafetyError(
-                    f"digital_in line{input_line} must be known and LOW before starting"
+                    f"digital_out line{output_line} must be configured for acquisition"
                 )
-            if output.states.get(output_line) is not False:
+
+            if initialize_output:
+                # Never invent levels for unrelated pins in a multi-line output task.
+                if any(
+                    state is None
+                    for line, state in output.states.items()
+                    if line != output_line
+                ):
+                    raise MotionSafetyError(
+                        "all non-handshake digital outputs must be initialized before starting"
+                    )
+                states = {
+                    line: output_idle_state if line == output_line else bool(state)
+                    for line, state in output.states.items()
+                }
+                self.write_outputs(states, source="handshake")
+            elif output.states.get(output_line) is not output_idle_state:
+                output_level = "HIGH" if output_idle_state else "LOW"
                 raise MotionSafetyError(
-                    f"digital_out line{output_line} must be initialized LOW before starting"
+                    f"digital_out line{output_line} must be initialized {output_level} "
+                    "before starting"
+                )
+
+            # Check the peer only after the local output has reached its idle level.
+            inputs = self.read_inputs()
+            if inputs.get(input_line) is not input_idle_state:
+                input_level = "HIGH" if input_idle_state else "LOW"
+                raise MotionSafetyError(
+                    f"digital_in line{input_line} must be known and {input_level} "
+                    "before starting"
                 )
             self._handshake_active = True
 
     def end_handshake(self) -> None:
-        """Release exclusive output ownership after returning the signal LOW."""
+        """Release exclusive output ownership after the caller restores its idle level."""
         with self._lock:
             self._handshake_active = False
 

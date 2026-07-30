@@ -272,13 +272,15 @@ class ConfigurationDialog(QDialog):
             "step_y_mm": "Default Y step for the per-run mosaic setup, in millimetres.",
             "settling_time_s": "Wait after reaching a mosaic tile, in seconds.",
             "dwell_time_s": "Optional per-tile dwell duration in seconds.",
-            "ready_output_line": "Digital Out line held HIGH when movement is complete.",
-            "complete_input_line": "Digital In line raised by acquisition when data is ready.",
-            "acquisition_timeout_s": "Maximum wait for acquisition Done to become HIGH.",
-            "reset_timeout_s": "Maximum wait for the peer signal to return LOW.",
-            "ready_input_line": "Digital In line receiving movement Ready.",
-            "complete_output_line": "Digital Out line held HIGH after dummy acquisition.",
-            "acquisition_duration_s": "Dummy acquisition duration before Done becomes HIGH.",
+            "ready_output_line": "Movement request output: HIGH idle, LOW requests an image.",
+            "complete_input_line": "OCT response input: HIGH acquiring, LOW image complete.",
+            "acquisition_timeout_s": "Maximum wait for OCT response to rise HIGH.",
+            "reset_timeout_s": "Maximum wait for OCT response to fall LOW.",
+            "ready_input_line": "Dummy input receiving the active-LOW movement request.",
+            "complete_output_line": "Dummy response: HIGH acquiring, LOW complete.",
+            "acquisition_duration_s": (
+                "Dummy acquisition duration between response HIGH and LOW."
+            ),
         }
         return descriptions.get(leaf, f"Configuration value for {dotted}.")
 

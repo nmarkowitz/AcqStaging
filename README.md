@@ -250,31 +250,48 @@ at the configured polling interval. Merely connecting Digital Out never writes.
 
 ### Acquisition handshake
 
-The movement application uses a latched idle-LOW protocol so software polling
-cannot miss a short edge:
+The movement application uses an active-LOW request and a two-edge acquisition
+response:
 
-1. Movement reaches and settles at a tile, then holds Ready HIGH.
-2. Acquisition detects Ready HIGH, acquires data, and holds Done HIGH.
-3. Movement detects Done HIGH and returns Ready LOW.
-4. Acquisition detects Ready LOW and returns Done LOW.
-5. Movement verifies both lines are reset before advancing to the next tile.
+1. Idle is movement Digital Out HIGH and OCT Digital In LOW.
+2. After movement reaches and settles at a tile, it sets Digital Out LOW and
+   holds it LOW to request one image.
+3. Movement requires Digital In to transition LOW to HIGH, meaning OCT accepted
+   the trigger, armed the digitizer, and started acquisition.
+4. Movement continues holding Digital Out LOW and requires Digital In to
+   transition HIGH to LOW, meaning the first OCT image completed.
+5. Only after that falling edge does movement restore Digital Out HIGH.
 
-Before starting, connect both DAQ directions and use **Apply Pin States** to
-initialize every configured Digital Out pin, including Ready, LOW. Stale HIGH or
-UNKNOWN states fail preflight before the first movement. Manual output writes and
-continuous output reassertion are blocked while the handshake owns Digital Out.
+Because the input must first be observed HIGH, its initial idle LOW level can
+never be interpreted as image completion.
+
+Before starting, connect both DAQ directions. **Start Mosaic** automatically
+initializes the configured movement-request output HIGH before checking that
+the OCT response input is LOW. If the output task contains additional pins,
+initialize those pins explicitly with **Apply Pin States** first so their levels
+can be preserved. Manual output writes and continuous output reassertion are
+blocked while the handshake owns Digital Out.
 
 When `acquisition_handshake.enabled` is false, mosaics retain the existing
 motion-only `dwell_time_s` behavior. An enabled handshake replaces that dwell and
 cannot be bypassed through the GUI.
 
+The movement application invokes this exchange once per acquired mosaic tile.
+The current OCT implementation handles it only once per externally started
+scan, so OCT must be started or re-armed for another externally triggered scan
+before movement issues the next tile request. The two idle levels alone do not
+tell movement whether OCT has been re-armed.
+
 ### Dummy data acquirer
 
 The standalone dummy GUI reuses the Digital In and Digital Out panels. Connect
-both directions, initialize every configured output LOW, and click **Start
-Listening**. Each Ready request starts a configurable timed acquisition;
-**Complete Now** ends the current wait early. Done remains HIGH until movement
-returns Ready LOW. **Stop Listening** interrupts waits and returns Done LOW.
+both directions, initialize every configured OCT-response output LOW, ensure
+the movement-request input is HIGH, and click **Start Listening**. A falling
+request makes the dummy response HIGH immediately; it remains HIGH during the
+configured acquisition and falls LOW when the image completes. The dummy then
+waits for movement to reset its request HIGH before accepting another falling
+edge. **Complete Now** ends the current acquisition early. **Stop Listening**
+interrupts waits and returns the response output LOW.
 
 ## Safe simulation walkthrough
 
@@ -377,14 +394,29 @@ parameters are intentionally excluded. Only acquisition coordination signals are
 - `enabled`: require DAQ acquisition acknowledgement for every tile
 - `ready_output_line`: movement Digital Out line connected to acquisition Ready input
 - `complete_input_line`: movement Digital In line connected to acquisition Done output
-- `acquisition_timeout_s`: maximum wait for Done HIGH
-- `reset_timeout_s`: maximum wait for Done to return LOW after Ready is lowered
+- `acquisition_timeout_s`: maximum wait for OCT response LOW to HIGH acceptance
+- `reset_timeout_s`: maximum wait for OCT response HIGH to LOW image completion
 - `polling_interval_ms`: interval used while checking the latched input state
 
 The separate dummy profile contains matching `ready_input_line` and
 `complete_output_line` assignments plus `acquisition_duration_s`. The physical
 wiring must cross movement Ready output to dummy Ready input and dummy Done
 output to movement Done input. Verify device, port, and line assignments before connection.
+
+For a standalone two-pair movement-side NI-DAQ check, review the four channel
+names and then run one explicitly authorized exchange:
+
+```powershell
+python scripts/nidaq_movement_handshake.py `
+  --output-lines Dev1/port0/line0 Dev1/port0/line1 `
+  --input-lines Dev1/port1/line0 Dev1/port1/line1 `
+  --confirm-hardware
+```
+
+The script drives both outputs together and requires both inputs to complete
+LOW -> HIGH -> LOW before restoring both outputs HIGH. It performs exactly one
+exchange because the current OCT software must be restarted or re-armed before
+another external trigger. Omitting `--confirm-hardware` opens no NI-DAQ task.
 
 ### Zaber connection settings
 
@@ -556,7 +588,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |
 | `test_thorlabs_adapter.py` | BSC101 controller/channel lifecycle, exact actuator-settings validation, cleanup, and callback movement using fakes. |
 | `test_digital_adapter.py` | Whole-port bitmask reads and selected multi-pin writes with NI-DAQ fakes. |
-| `test_acquisition.py` | Idle preflight, latched Ready/Done exchange, timeout cleanup, and dummy responses. |
+| `test_acquisition.py` | Active-LOW request edges, response transitions, timeout cleanup, and dummy behavior. |
 | `test_hardware_markers.py` | Guard proving hardware tests are excluded from normal pytest runs. |
 
 The Zaber and Thorlabs adapter tests do not access physical devices.

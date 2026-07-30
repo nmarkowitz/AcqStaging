@@ -20,7 +20,8 @@
 ## Locked decisions
 
 - Camera and real data acquisition remain deferred; DAQ-coordinated mosaic traversal is in scope.
-- Acquisition signaling uses an idle-LOW latched Ready/Done handshake, not short pulses.
+- Acquisition signaling uses an idle-HIGH active-LOW movement request and an OCT
+  response that rises on acceptance and falls on first-image completion.
 - Widgets are authored directly in Python.
 - Zaber configuration supports shared or separate serial ports.
 - Settings are stored in versioned JSON application profiles, never vendor device memory.
@@ -92,6 +93,7 @@ Primary references: `references/ni-examples/digital_in` and
 | 19 | Recent-pace duration prediction | Complete (simulation-verified) |
 | 20 | Optional second mosaic tiling | In progress |
 | 21 | Delegate physical travel limits to vendor controllers | In progress |
+| 22 | Active-LOW OCT acquisition trigger handshake | In progress |
 
 Every phase must pass:
 
@@ -235,8 +237,39 @@ Hardware-marked tests are never run without an explicit user request.
   and Zaber enforcement.
 - [ ] Run the complete simulated and fake suite, Ruff, and mypy.
 
+### Phase 22 — Active-LOW OCT acquisition trigger handshake
+
+- [x] Require movement output HIGH and OCT response LOW at idle.
+- [x] Hold movement output LOW through response LOW-to-HIGH acceptance and
+  HIGH-to-LOW image completion before resetting HIGH.
+- [x] Update the dummy peer to raise its response on acceptance and lower it on
+  image completion, then wait for movement reset.
+- [x] Initialize the configured movement request HIGH when Start Mosaic begins.
+- [ ] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Replaced the earlier idle-LOW Ready/Done exchange with the OCT protocol:
+  movement output HIGH idle, LOW request, OCT input HIGH acquisition start, OCT
+  input LOW first-image completion, then movement output HIGH reset.
+- Start Mosaic now initializes its configured request output HIGH automatically;
+  additional configured output pins must already have explicit known states.
+- Automatic request initialization passes 12 focused handshake/adapter tests;
+  scoped Ruff and mypy pass. The safe complete suite reports 88 passed,
+  3 failed, and 1 hardware guard deselected because the absent
+  `configs/hardware.example.json` still breaks three unrelated tests. No
+  hardware was accessed.
+- Focused handshake verification passes with 14 tests; Ruff and mypy pass. The
+  complete suite reports 87 passed, 3 failed, and 1 hardware guard deselected
+  because the pre-existing deletion of `configs/hardware.example.json` still
+  breaks three configuration tests. No hardware was accessed.
+- Added a standalone two-input/two-output NI-DAQ movement-side handshake script
+  with explicit hardware confirmation and fake-task coverage. It performs one
+  synchronized LOW request, HIGH acceptance, LOW completion, and HIGH reset.
+- The two new fake-task tests pass; Ruff and mypy pass. The complete suite
+  reports 89 passed, 3 failed, and 1 hardware guard deselected because the
+  absent `configs/hardware.example.json` still breaks three unrelated tests.
+  No hardware was accessed.
 - Removed application travel bounds from physical-axis GUI controls, service
   preflight, and real adapters. Physical destinations now reach Zaber or
   Kinesis unchanged so their existing controller limits remain authoritative;
@@ -302,8 +335,9 @@ Hardware-marked tests are never run without an explicit user request.
   pass. Tests remain simulation/fake-only. No hardware was accessed.
 - Added schema-version-4 optional acquisition handshake settings with automatic
   in-memory migration of schema-version-3 application profiles.
-- Added a preflighted, idle-LOW Ready/Done mosaic handshake that replaces dwell
-  when enabled, remains Stop-aware, preserves other output states, and fails on stale signals.
+- Added a preflighted tile handshake that replaces dwell, remains Stop-aware,
+  preserves other output states, and fails on stale signals. Phase 22 later
+  changed its levels and edge meanings to match the OCT protocol.
 - Added the standalone `acq-staging-dummy-acquirer` GUI with independent DAQ
   configuration, timed or manual completion, counters, logging, and safe cleanup.
 - Added separate simulated and placeholder hardware dummy-acquirer profiles.

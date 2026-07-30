@@ -13,7 +13,7 @@ with nidaqmx.Task() as task:
 
     # Add channel to task
     task.do_channels.add_do_chan(
-        "Dev1/port0/line0", 
+        "Dev1/port0/line7", 
         line_grouping=LineGrouping.CHAN_PER_LINE
         )
     
@@ -28,6 +28,10 @@ with nidaqmx.Task() as task:
     task.start()
     task.write(False)
     task.stop()
+
+
+def send_write(port, state):
+
 
 
 # Read the pins

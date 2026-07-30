@@ -19,7 +19,7 @@ EventCallback = Callable[[str, dict[str, object]], None]
 
 
 class DaqTileHandshake:
-    """Coordinate the movement side of an idle-LOW, four-phase DAQ handshake."""
+    """Coordinate an active-LOW request with HIGH-then-LOW acquisition response."""
 
     def __init__(
         self,
@@ -37,7 +37,7 @@ class DaqTileHandshake:
         return self.config.enabled
 
     def begin(self) -> None:
-        """Preflight idle signals and reserve Digital Out before mosaic motion."""
+        """Initialize the request HIGH, preflight the response, and reserve Digital Out."""
         if not self.enabled:
             return
         with self._lock:
@@ -46,6 +46,9 @@ class DaqTileHandshake:
             self.digital_service.begin_handshake(
                 self.config.complete_input_line,
                 self.config.ready_output_line,
+                input_idle_state=False,
+                output_idle_state=True,
+                initialize_output=True,
             )
             self._active = True
 
@@ -56,20 +59,20 @@ class DaqTileHandshake:
         mosaic_deadline: float | None,
         on_event: EventCallback | None,
     ) -> None:
-        """Latch Ready HIGH until acquisition completion is acknowledged and reset."""
+        """Request one image and require both acquisition response transitions."""
         with self._lock:
             if not self._active:
                 raise MotionSafetyError("the acquisition handshake is not active")
-        # Reject stale Done or Ready levels before starting each tile exchange.
+        # Require input LOW and output HIGH so an initial LOW cannot mean completion.
         self._require_cycle_idle()
         if on_event is not None:
             on_event("ACQUISITION_WAIT_START", {"tile": tile_number})
         try:
-            # Ready stays HIGH until the acquirer raises Done, so polling cannot miss it.
-            self.digital_service.write_output_line(self.config.ready_output_line, True)
+            # The falling output requests one image and remains LOW through acquisition.
+            self.digital_service.write_output_line(self.config.ready_output_line, False)
             if on_event is not None:
                 on_event(
-                    "ACQUISITION_READY_HIGH",
+                    "ACQUISITION_REQUEST_LOW",
                     {"tile": tile_number, "line": self.config.ready_output_line},
                 )
             self._wait_for_input(
@@ -77,40 +80,42 @@ class DaqTileHandshake:
                 self.config.acquisition_timeout_s,
                 stop_event,
                 mosaic_deadline,
-                "acquisition completion",
+                "acquisition start",
             )
             if on_event is not None:
                 on_event(
-                    "ACQUISITION_DONE_HIGH",
+                    "ACQUISITION_STARTED_HIGH",
                     {"tile": tile_number, "line": self.config.complete_input_line},
                 )
 
-            # Lowering Ready acknowledges Done and starts the reset half of the protocol.
-            self.digital_service.write_output_line(self.config.ready_output_line, False)
-            if on_event is not None:
-                on_event(
-                    "ACQUISITION_READY_LOW",
-                    {"tile": tile_number, "line": self.config.ready_output_line},
-                )
+            # Holding the request LOW ensures only the peer's HIGH-to-LOW edge completes the image.
             self._wait_for_input(
                 False,
                 self.config.reset_timeout_s,
                 stop_event,
                 mosaic_deadline,
-                "acquisition reset",
+                "image completion",
             )
             if on_event is not None:
                 on_event(
-                    "ACQUISITION_DONE_LOW",
+                    "ACQUISITION_COMPLETE_LOW",
                     {"tile": tile_number, "line": self.config.complete_input_line},
+                )
+
+            # Restoring output HIGH resets the movement side only after completion.
+            self.digital_service.write_output_line(self.config.ready_output_line, True)
+            if on_event is not None:
+                on_event(
+                    "ACQUISITION_RESET_HIGH",
+                    {"tile": tile_number, "line": self.config.ready_output_line},
                 )
                 on_event("ACQUISITION_WAIT_COMPLETE", {"tile": tile_number})
         except Exception as exc:
-            # A failed exchange returns the owned output LOW without hiding the root error.
+            # A failed exchange restores idle HIGH without hiding the root error.
             with suppress(Exception):
                 self.digital_service.write_output_line(
                     self.config.ready_output_line,
-                    False,
+                    True,
                     source="cleanup",
                 )
             if on_event is not None:
@@ -122,27 +127,27 @@ class DaqTileHandshake:
             raise
 
     def abort(self) -> None:
-        """Best-effort return of the movement Ready output to its idle LOW state."""
+        """Best-effort return of the movement request output to idle HIGH."""
         with self._lock:
             if not self._active:
                 return
             self.digital_service.write_output_line(
                 self.config.ready_output_line,
-                False,
+                True,
                 source="cleanup",
             )
 
     def finish(self) -> None:
-        """Return Ready LOW and release exclusive Digital Out ownership."""
+        """Return the request output HIGH and release Digital Out ownership."""
         with self._lock:
             if not self._active:
                 return
             try:
                 output = self.digital_service.status(DigitalDirection.OUTPUT)
-                if output.states.get(self.config.ready_output_line) is True:
+                if output.states.get(self.config.ready_output_line) is not True:
                     self.digital_service.write_output_line(
                         self.config.ready_output_line,
-                        False,
+                        True,
                         source="cleanup",
                     )
             finally:
@@ -150,16 +155,16 @@ class DaqTileHandshake:
                 self._active = False
 
     def _require_cycle_idle(self) -> None:
-        # Refresh Done and inspect cached Ready before every tile to reject stale state.
+        # Refresh the response and inspect the request before every tile.
         inputs = self.digital_service.read_inputs()
         output = self.digital_service.status(DigitalDirection.OUTPUT)
         if inputs.get(self.config.complete_input_line) is not False:
             raise MotionSafetyError(
                 f"digital_in line{self.config.complete_input_line} must be LOW before a tile"
             )
-        if output.states.get(self.config.ready_output_line) is not False:
+        if output.states.get(self.config.ready_output_line) is not True:
             raise MotionSafetyError(
-                f"digital_out line{self.config.ready_output_line} must be LOW before a tile"
+                f"digital_out line{self.config.ready_output_line} must be HIGH before a tile"
             )
 
     def _wait_for_input(
@@ -190,7 +195,7 @@ class DaqTileHandshake:
 
 
 class DummyDataAcquirer:
-    """Emulate an acquisition application that responds to movement Ready signals."""
+    """Emulate an OCT peer that accepts an active-LOW movement request."""
 
     def __init__(self, config: DummyAcquirerConfig, digital_service: DigitalIOService) -> None:
         self.config = config
@@ -219,14 +224,16 @@ class DummyDataAcquirer:
             self.digital_service.begin_handshake(
                 self.config.handshake.ready_input_line,
                 self.config.handshake.complete_output_line,
+                input_idle_state=True,
+                output_idle_state=False,
             )
             handshake_started = True
             self._clear_error()
             self._replace_status(listening=True, acquiring=False, error=None)
             self._emit(on_event, "DUMMY_LISTENING_START", {})
             while not self._stop.is_set():
-                # Waiting for the next Ready HIGH has no timeout but remains stoppable.
-                if not self._wait_for_ready(True, None):
+                # A HIGH-to-LOW movement request starts exactly one acquisition cycle.
+                if not self._wait_for_request(False, None, "movement request LOW"):
                     break
                 self._complete_now.clear()
                 self._replace_status(
@@ -238,20 +245,17 @@ class DummyDataAcquirer:
                     "DUMMY_ACQUISITION_START",
                     {"request": self.status().requests_received},
                 )
-                if not self._wait_for_acquisition():
-                    break
 
-                # Done remains HIGH until movement lowers Ready, preventing missed pulses.
+                # Raising the response acknowledges the trigger before image acquisition.
                 self.digital_service.write_output_line(
                     self.config.handshake.complete_output_line,
                     True,
                 )
-                self._emit(on_event, "DUMMY_DONE_HIGH", {})
-                if not self._wait_for_ready(
-                    False,
-                    self.config.handshake.reset_timeout_s,
-                ):
+                self._emit(on_event, "DUMMY_ACQUISITION_ACCEPTED_HIGH", {})
+                if not self._wait_for_acquisition():
                     break
+
+                # The falling response edge announces completion of the first image.
                 self.digital_service.write_output_line(
                     self.config.handshake.complete_output_line,
                     False,
@@ -265,13 +269,23 @@ class DummyDataAcquirer:
                     "DUMMY_ACQUISITION_COMPLETE",
                     {"completed": self.status().acquisitions_completed},
                 )
+                self._emit(on_event, "DUMMY_IMAGE_COMPLETE_LOW", {})
+
+                # Require movement to restore HIGH before accepting another falling edge.
+                if not self._wait_for_request(
+                    True,
+                    self.config.handshake.reset_timeout_s,
+                    "movement reset HIGH",
+                ):
+                    break
+                self._emit(on_event, "DUMMY_REQUEST_RESET_HIGH", {})
             return self.status()
         except Exception as exc:
             self._replace_status(error=str(exc))
             self._emit(on_event, "DUMMY_ACQUIRER_FAILED", {"error": str(exc)})
             raise
         finally:
-            # Shutdown returns Done LOW before allowing normal Digital Out control again.
+            # Shutdown returns the OCT response LOW before releasing Digital Out.
             if handshake_started:
                 with suppress(Exception):
                     self.digital_service.write_output_line(
@@ -305,8 +319,13 @@ class DummyDataAcquirer:
             self._stop.wait(min(interval_s, max(0.0, deadline - time.monotonic())))
         return False
 
-    def _wait_for_ready(self, expected: bool, timeout_s: float | None) -> bool:
-        # Poll the static level so the latched protocol remains independent of edge timing.
+    def _wait_for_request(
+        self,
+        expected: bool,
+        timeout_s: float | None,
+        description: str,
+    ) -> bool:
+        # Prior opposite-level validation makes each accepted level a real transition.
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         interval_s = self.config.handshake.polling_interval_ms / 1000.0
         while not self._stop.is_set():
@@ -314,7 +333,7 @@ class DummyDataAcquirer:
             if states.get(self.config.handshake.ready_input_line) is expected:
                 return True
             if deadline is not None and time.monotonic() >= deadline:
-                raise AdapterError("timed out waiting for movement Ready to reset LOW")
+                raise AdapterError(f"timed out waiting for {description}")
             self._stop.wait(interval_s)
         return False
 

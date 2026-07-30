@@ -140,7 +140,7 @@ def test_output_is_reasserted_only_after_first_explicit_write() -> None:
     ]
 
 
-def test_handshake_line_write_preserves_other_initialized_outputs() -> None:
+def test_handshake_initialization_preserves_other_initialized_outputs() -> None:
     config = default_simulation_config()
     devices: dict[DigitalDirection, DigitalIODevice] = {
         DigitalDirection.INPUT: SimulatedDigitalIODevice(
@@ -158,10 +158,18 @@ def test_handshake_line_write_preserves_other_initialized_outputs() -> None:
     initial = {0: False, 1: True, 2: False, 3: True}
     service.write_outputs(initial)
 
-    service.begin_handshake(0, 0)
-    service.write_output_line(0, True)
-    observed = service.status(DigitalDirection.OUTPUT).states
+    service.begin_handshake(
+        0,
+        0,
+        input_idle_state=False,
+        output_idle_state=True,
+        initialize_output=True,
+    )
+    initialized = service.status(DigitalDirection.OUTPUT).states
     service.write_output_line(0, False)
+    observed = service.status(DigitalDirection.OUTPUT).states
+    service.write_output_line(0, True)
     service.end_handshake()
 
-    assert observed == {0: True, 1: True, 2: False, 3: True}
+    assert initialized == {0: True, 1: True, 2: False, 3: True}
+    assert observed == initial
