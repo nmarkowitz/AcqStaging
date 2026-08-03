@@ -45,6 +45,7 @@ class MosaicSetupDialog(QDialog):
         self.setModal(True)
         self.resize(1050, 620)
         self.validated_spec: MosaicSequenceSpec | None = None
+        self.orientation = mosaic.orientation
         supplied_limits = axis_limits or {}
 
         # Simulators retain configured bounds while physical axes remain application-unbounded.
@@ -115,8 +116,11 @@ class MosaicSetupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Configure the required first XY tiling and optionally run Tiling 2 "
-                "after it completes successfully. All positions use controller home."
+                "Enter two opposite controller-home corners for each tiling. The profile "
+                f"defines physical right as {self.orientation.right_axis.value.upper()}"
+                f"{'+' if self.orientation.right_sign > 0 else '-'} and down as "
+                f"{self.orientation.down_axis.value.upper()}"
+                f"{'+' if self.orientation.down_sign > 0 else '-'}."
             )
         )
         layout.addWidget(self.run_tiling_two)
@@ -182,7 +186,7 @@ class MosaicSetupDialog(QDialog):
         form = QFormLayout(group)
         fields: dict[str, QDoubleSpinBox] = {}
 
-        # X and Y each expose start, stop, and unchanged step magnitude.
+        # X and Y each expose two opposite rectangle corners and a controller-axis step.
         for axis in (AxisName.X, AxisName.Y):
             for role in ("start", "stop"):
                 key = f"{role}_{axis.value}"
@@ -191,7 +195,8 @@ class MosaicSetupDialog(QDialog):
                 )
                 box.setValue(self.current[axis])
                 fields[key] = box
-                form.addRow(f"{axis.value.upper()} {role}", box)
+                corner = "corner 1" if role == "start" else "opposite corner"
+                form.addRow(f"{axis.value.upper()} {corner}", box)
             step = QDoubleSpinBox()
             step.setObjectName(f"tiling_{tiling_number}_step_{axis.value}_mm")
             step.setDecimals(6)
@@ -244,6 +249,7 @@ class MosaicSetupDialog(QDialog):
             fields["stop_y"].value(),
             fields["z"].value(),
             0.0 if index == 0 else fields["rotation"].value(),
+            self.orientation,
         )
 
     @staticmethod
@@ -287,7 +293,9 @@ class MosaicSetupDialog(QDialog):
                 else ""
             )
             self.summaries[index].setText(
-                f"{tiling.tiles_x} x {tiling.tiles_y} = {tiling.total_tiles} tiles; "
+                f"{tiling.tiles_horizontal} columns x {tiling.tiles_vertical} rows = "
+                f"{tiling.total_tiles} tiles; top-left "
+                f"{tiling.controller_position(0, 0)}; "
                 f"resolved stop {tiling.ending}{adjustment}"
             )
 

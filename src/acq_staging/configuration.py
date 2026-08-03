@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +17,13 @@ from acq_staging.models import (
     AxisName,
     DigitalAdapterType,
     DigitalDirection,
+    MosaicOrientation,
 )
 from acq_staging.models import (
     LimitsConfig as LimitsConfig,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DUMMY_ACQUIRER_SCHEMA_VERSION = 1
 
 
@@ -152,6 +153,7 @@ class MosaicConfig:
     settling_time_s: float = 2.0
     dwell_time_s: float = 0.0
     operation_timeout_s: float = 3600.0
+    orientation: MosaicOrientation = field(default_factory=MosaicOrientation)
 
     def validate(self) -> None:
         # XY defaults must be usable when the setup dialog starts with distinct endpoints.
@@ -328,7 +330,15 @@ class AppConfig:
                 for axis, component in self.components.items()
             },
             "ui": asdict(self.ui),
-            "mosaic": asdict(self.mosaic),
+            "mosaic": {
+                **asdict(self.mosaic),
+                "orientation": {
+                    "right_axis": self.mosaic.orientation.right_axis.value,
+                    "right_sign": self.mosaic.orientation.right_sign,
+                    "down_axis": self.mosaic.orientation.down_axis.value,
+                    "down_sign": self.mosaic.orientation.down_sign,
+                },
+            },
             "digital_io": {
                 direction.value: {
                     **asdict(component),
@@ -446,6 +456,14 @@ def _parse_handshake_line(value: object, field: str) -> int:
     return _parse_digital_line(value, field)
 
 
+def _parse_orientation_sign(value: object, field: str) -> int:
+    """Accept only an integer -1 or 1 for a signed profile direction."""
+    # Reject booleans and fractional numbers instead of silently coercing malformed JSON.
+    if isinstance(value, int) and not isinstance(value, bool) and value in (-1, 1):
+        return value
+    raise ValueError(f"{field}: expected integer -1 or 1")
+
+
 def config_from_dict(raw: object) -> AppConfig:
     """Parse and validate a configuration dictionary."""
     data = deepcopy(_mapping(raw, "configuration"))
@@ -462,10 +480,20 @@ def config_from_dict(raw: object) -> AppConfig:
                 component_data["limits"] = None
     # Schema 6 replaces XYZ count defaults with two transient endpoint-defined XY tilings.
     if data.get("schema_version") == 5:
-        data["schema_version"] = SCHEMA_VERSION
+        data["schema_version"] = 6
         mosaic = _mapping(data.get("mosaic", {}), "mosaic")
         for obsolete in ("step_z_mm", "tiles_x", "tiles_y", "tiles_z"):
             mosaic.pop(obsolete, None)
+    # Schema 7 makes physical right/down directions explicit while preserving old +X/+Y order.
+    if data.get("schema_version") == 6:
+        data["schema_version"] = SCHEMA_VERSION
+        mosaic = _mapping(data.get("mosaic", {}), "mosaic")
+        mosaic["orientation"] = {
+            "right_axis": AxisName.X.value,
+            "right_sign": 1,
+            "down_axis": AxisName.Y.value,
+            "down_sign": 1,
+        }
     # Convert external strings and mappings into the application's typed model.
     try:
         connections = {
@@ -489,13 +517,27 @@ def config_from_dict(raw: object) -> AppConfig:
             handshake_data["complete_input_line"],
             "acquisition_handshake.complete_input_line",
         )
+        mosaic_data = dict(_mapping(data["mosaic"], "mosaic"))
+        orientation_data = dict(
+            _mapping(mosaic_data.pop("orientation"), "mosaic.orientation")
+        )
+        orientation = MosaicOrientation(
+            right_axis=AxisName(orientation_data["right_axis"]),
+            right_sign=_parse_orientation_sign(
+                orientation_data["right_sign"], "mosaic.orientation.right_sign"
+            ),
+            down_axis=AxisName(orientation_data["down_axis"]),
+            down_sign=_parse_orientation_sign(
+                orientation_data["down_sign"], "mosaic.orientation.down_sign"
+            ),
+        )
         config = AppConfig(
             schema_version=int(data["schema_version"]),
             profile_name=str(data["profile_name"]),
             connections=connections,
             components=components,
             ui=UiConfig(**_mapping(data.get("ui", {}), "ui")),
-            mosaic=MosaicConfig(**_mapping(data["mosaic"], "mosaic")),
+            mosaic=MosaicConfig(orientation=orientation, **mosaic_data),
             digital_io=digital_io,
             acquisition_handshake=AcquisitionHandshakeConfig(**handshake_data),
         )

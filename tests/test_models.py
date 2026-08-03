@@ -3,6 +3,7 @@ import pytest
 from acq_staging.models import (
     HOME_ORDER,
     AxisName,
+    MosaicOrientation,
     MosaicSequenceSpec,
     MosaicTilingSpec,
     Pose,
@@ -40,6 +41,35 @@ def test_xy_tiling_rounds_partial_endpoint_outward() -> None:
 
     assert spec.tiles_x == 5
     assert spec.end_x_mm == pytest.approx(1.2)
+
+
+def test_orientation_maps_logical_top_left_with_negative_y_travel() -> None:
+    orientation = MosaicOrientation(AxisName.X, 1, AxisName.Y, -1)
+    spec = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 0.0, 2.0, 1.0, 4.0, 0.0, orientation
+    )
+
+    assert spec.logical_tile_counts == (3, 2)
+    assert spec.controller_position(0, 0) == (0.0, 1.0)
+    assert spec.controller_position(2, 1) == (2.0, 0.0)
+
+
+def test_orientation_can_swap_controller_axes() -> None:
+    orientation = MosaicOrientation(AxisName.Y, 1, AxisName.X, -1)
+    spec = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 10.0, 1.0, 12.0, 4.0, 0.0, orientation
+    )
+
+    assert spec.logical_tile_counts == (3, 2)
+    assert spec.controller_position(0, 0) == (1.0, 10.0)
+    assert spec.controller_position(2, 1) == (0.0, 12.0)
+
+
+def test_orientation_rejects_duplicate_or_nonunit_axis_assignments() -> None:
+    with pytest.raises(ValueError, match="assign controller X and Y exactly once"):
+        MosaicOrientation(AxisName.X, 1, AxisName.X, -1)
+    with pytest.raises(ValueError, match="signs must be -1 or 1"):
+        MosaicOrientation(AxisName.X, 0, AxisName.Y, 1)
 
 
 def test_xy_tiling_requires_positive_steps_even_for_single_tile() -> None:

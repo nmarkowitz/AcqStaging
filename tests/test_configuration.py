@@ -12,7 +12,12 @@ from acq_staging.configuration import (
     load_dummy_acquirer_config,
 )
 from acq_staging.errors import ConfigurationError
-from acq_staging.models import AdapterType, AxisName, DigitalDirection
+from acq_staging.models import (
+    AdapterType,
+    AxisName,
+    DigitalDirection,
+    MosaicOrientation,
+)
 
 
 def test_default_config_round_trip() -> None:
@@ -36,7 +41,7 @@ def test_rejects_invalid_limits() -> None:
 
 def test_config_dictionary_is_json_serializable() -> None:
     encoded = json.dumps(default_simulation_config().to_dict())
-    assert json.loads(encoded)["schema_version"] == 6
+    assert json.loads(encoded)["schema_version"] == 7
 
 
 def test_schema_three_profile_migrates_with_handshake_disabled() -> None:
@@ -47,7 +52,7 @@ def test_schema_three_profile_migrates_with_handshake_disabled() -> None:
 
     migrated = config_from_dict(data)
 
-    assert migrated.schema_version == 6
+    assert migrated.schema_version == 7
     assert migrated.acquisition_handshake.enabled is False
 
 
@@ -81,7 +86,7 @@ def test_schema_four_hardware_limits_migrate_to_vendor_enforcement() -> None:
 
     migrated = config_from_dict(data)
 
-    assert migrated.schema_version == 6
+    assert migrated.schema_version == 7
     assert migrated.components[AxisName.X].limits is None
 
 
@@ -94,14 +99,63 @@ def test_schema_five_mosaic_defaults_migrate_without_z_or_counts() -> None:
 
     migrated = config_from_dict(data)
 
-    assert migrated.schema_version == 6
+    assert migrated.schema_version == 7
     assert set(migrated.to_dict()["mosaic"]) == {
         "step_x_mm",
         "step_y_mm",
         "settling_time_s",
         "dwell_time_s",
         "operation_timeout_s",
+        "orientation",
     }
+
+
+def test_schema_six_profile_migrates_to_prior_positive_xy_orientation() -> None:
+    data = default_simulation_config().to_dict()
+    data["schema_version"] = 6
+    del data["mosaic"]["orientation"]
+
+    migrated = config_from_dict(data)
+
+    assert migrated.schema_version == 7
+    assert migrated.mosaic.orientation == MosaicOrientation()
+
+
+def test_profile_orientation_round_trips_signed_swapped_axes() -> None:
+    data = default_simulation_config().to_dict()
+    data["mosaic"]["orientation"] = {
+        "right_axis": "y",
+        "right_sign": -1,
+        "down_axis": "x",
+        "down_sign": 1,
+    }
+
+    config = config_from_dict(data)
+
+    assert config.mosaic.orientation == MosaicOrientation(
+        AxisName.Y, -1, AxisName.X, 1
+    )
+    assert config.to_dict()["mosaic"]["orientation"] == data["mosaic"]["orientation"]
+
+
+@pytest.mark.parametrize("invalid_sign", [0, 1.5, True])
+def test_profile_orientation_rejects_invalid_signs(invalid_sign: object) -> None:
+    data = default_simulation_config().to_dict()
+    data["mosaic"]["orientation"]["down_sign"] = invalid_sign
+
+    with pytest.raises(ConfigurationError, match="expected integer -1 or 1"):
+        config_from_dict(data)
+
+
+def test_hardware_profiles_map_the_reported_bottom_left_home_to_top_left() -> None:
+    # Both maintained laboratory profiles use decreasing controller Y for physical down.
+    expected = MosaicOrientation(AxisName.X, 1, AxisName.Y, -1)
+
+    assert load_config(Path("configs/true_hardware.json")).mosaic.orientation == expected
+    assert (
+        load_config(Path("configs/true_hardware_no-z.json")).mosaic.orientation
+        == expected
+    )
 
 
 def test_bsc101_requires_attached_stage_settings_name() -> None:

@@ -10,6 +10,7 @@ from acq_staging.models import (
     HOME_ORDER,
     AxisName,
     LimitsConfig,
+    MosaicOrientation,
     MosaicProgress,
     MosaicSequenceSpec,
     MosaicTilePhase,
@@ -135,6 +136,44 @@ def test_sequence_plans_two_independent_serpentine_xy_tilings() -> None:
     assert all(tile.z_mm == 6.0 and tile.theta_deg == 45.0 for tile in second)
 
 
+def test_tiling_starts_top_left_with_negative_controller_y_direction() -> None:
+    service = ready_service()
+    orientation = MosaicOrientation(AxisName.X, 1, AxisName.Y, -1)
+    spec = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 0.0, 2.0, 1.0, 5.0, 0.0, orientation
+    )
+
+    tiles = service.plan_mosaic_tiling(spec, 0)
+
+    assert [(tile.x_mm, tile.y_mm) for tile in tiles] == [
+        (0.0, 1.0),
+        (1.0, 1.0),
+        (2.0, 1.0),
+        (2.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 0.0),
+    ]
+
+
+def test_tiling_preserves_serpentine_order_when_controller_axes_are_swapped() -> None:
+    service = ready_service()
+    orientation = MosaicOrientation(AxisName.Y, 1, AxisName.X, -1)
+    spec = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 10.0, 1.0, 12.0, 5.0, 0.0, orientation
+    )
+
+    tiles = service.plan_mosaic_tiling(spec, 0)
+
+    assert [(tile.x_mm, tile.y_mm) for tile in tiles] == [
+        (1.0, 10.0),
+        (1.0, 11.0),
+        (1.0, 12.0),
+        (0.0, 12.0),
+        (0.0, 11.0),
+        (0.0, 10.0),
+    ]
+
+
 def test_sequence_runs_first_then_safe_rotation_transition_then_second() -> None:
     config = replace(
         default_simulation_config(),
@@ -195,6 +234,15 @@ def test_sequence_skips_disabled_second_tiling_entirely() -> None:
     audited_tilings = full_run["tilings"]
     assert isinstance(audited_tilings, list)
     assert len(audited_tilings) == 1
+    first_audit = audited_tilings[0]
+    assert isinstance(first_audit, dict)
+    assert first_audit["logical_tile_counts"] == [1, 2]
+    assert first_audit["orientation"] == {
+        "right_axis": "x",
+        "right_sign": 1,
+        "down_axis": "y",
+        "down_sign": 1,
+    }
     assert progress[-1].overall_total == spec.tiling_one.total_tiles
     assert service.pose.as_vector() == (0.0, 1.0, 5.0, 0.0)
 

@@ -328,7 +328,7 @@ The major configuration sections are:
 
 ### Top-level settings
 
-- `schema_version`: currently `6`
+- `schema_version`: currently `7`
 - `profile_name`: descriptive profile name
 - `connections`: reusable Zaber serial connections
 - `components`: X, Y, Z, and rotation definitions
@@ -341,9 +341,11 @@ Schema-version-3 application profiles load with acquisition handshaking disabled
 Schema-version-4 physical component limits are discarded during in-memory
 migration because physical travel enforcement is delegated to the vendor API
 and controller. Schema 6 removes obsolete Z-step and tile-count defaults now
-that each run defines two endpoint-based XY tilings with fixed Z. Migrated
-profiles save as schema version 6. Older profiles still require the documented
-`mosaic` and `digital_io` sections.
+that each run defines two endpoint-based XY tilings with fixed Z. Schema 7 adds
+a profile-level physical right/down mapping; older profiles migrate to the
+previous `right = X+`, `down = Y+` traversal. Migrated profiles save as schema
+version 7. Older profiles still require the documented `mosaic` and
+`digital_io` sections.
 
 ### Digital I/O settings
 
@@ -371,20 +373,25 @@ do not change the active profile or a saved JSON file:
 - `settling_time_s`: wait after reaching a tile before reporting it ready
 - `dwell_time_s`: optional motion-only placeholder wait at each tile
 - `operation_timeout_s`: maximum duration allowed for the complete selected run
+- `orientation.right_axis` and `orientation.right_sign`: controller direction
+  corresponding to physical mosaic right
+- `orientation.down_axis` and `orientation.down_sign`: controller direction
+  corresponding to physical mosaic down
 
-The setup window defines both tilings with inclusive beginning/end controller
-coordinates. Clearing **Run Tiling 2 after Tiling 1** disables its controls and
-excludes its geometry, tiles, and limits from the run. The application derives
-each XY direction from the entered points. A non-divisible span is extended
-outward to the next whole unchanged step, while equal points produce one
-position.
+The setup window defines both tilings with two inclusive opposite corners in
+controller-home coordinates. Clearing **Run Tiling 2 after Tiling 1** disables
+its controls and excludes its geometry, tiles, and limits from the run. The
+profile orientation selects the physical top-left corner and maps logical
+right/down travel onto signed controller X/Y directions. A non-divisible span
+is extended outward to the next whole unchanged step, while equal points
+produce one position.
 
-Each enabled tiling snakes across X and advances Y after each row while Z
-remains fixed. If selected, Tiling 2 begins automatically only after Tiling 1
-completes successfully. When the rotation target changes, the service moves Z
-to Safe transition Z, changes rotation, then moves Z to the next fixed
-acquisition position. The successful run ends at the last enabled tiling's last
-tile rather than returning home.
+Each enabled tiling starts at physical top-left, snakes toward physical right,
+and advances downward after each row while Z remains fixed. If selected,
+Tiling 2 begins automatically only after Tiling 1 completes successfully. When
+the rotation target changes, the service moves Z to Safe transition Z, changes
+rotation, then moves Z to the next fixed acquisition position. The successful
+run ends at the last enabled tiling's last tile rather than returning home.
 
 The legacy tilt-mosaic, vibratome, dual-Z, cut, notification, and acquisition
 parameters are intentionally excluded. Only acquisition coordination signals are in scope.

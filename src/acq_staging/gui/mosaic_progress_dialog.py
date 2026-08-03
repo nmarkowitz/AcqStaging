@@ -93,11 +93,14 @@ class MosaicOverview(QWidget):
         """Return the fitted on-screen rectangle for one logical XY tile."""
         spec = self._require_spec()
         x_index, y_index = key
-        if not (0 <= x_index < spec.tiles_x and 0 <= y_index < spec.tiles_y):
+        if not (
+            0 <= x_index < spec.tiles_horizontal
+            and 0 <= y_index < spec.tiles_vertical
+        ):
             raise IndexError("mosaic tile index is outside the overview")
         plane = self._plane_rect()
-        cell_width = plane.width() / spec.tiles_x
-        cell_height = plane.height() / spec.tiles_y
+        cell_width = plane.width() / spec.tiles_horizontal
+        cell_height = plane.height() / spec.tiles_vertical
         return QRectF(
             plane.left() + x_index * cell_width,
             plane.top() + y_index * cell_height,
@@ -143,11 +146,14 @@ class MosaicOverview(QWidget):
             self.MARGIN, self.MARGIN, -self.MARGIN, -self.MARGIN
         )
         cell_size = max(
-            min(bounds.width() / spec.tiles_x, bounds.height() / spec.tiles_y),
+            min(
+                bounds.width() / spec.tiles_horizontal,
+                bounds.height() / spec.tiles_vertical,
+            ),
             0.000001,
         )
-        width = cell_size * spec.tiles_x
-        height = cell_size * spec.tiles_y
+        width = cell_size * spec.tiles_horizontal
+        height = cell_size * spec.tiles_vertical
         return QRectF(
             bounds.left() + (bounds.width() - width) / 2.0,
             bounds.top() + (bounds.height() - height) / 2.0,
@@ -162,19 +168,19 @@ class MosaicOverview(QWidget):
             return
         first = max(first, 1) - 1
         last = min(last, spec.total_tiles) - 1
-        first_row, first_offset = divmod(first, spec.tiles_x)
-        last_row, last_offset = divmod(last, spec.tiles_x)
+        first_row, first_offset = divmod(first, spec.tiles_horizontal)
+        last_row, last_offset = divmod(last, spec.tiles_horizontal)
         plane = self._plane_rect()
         self._fill_row(
             painter,
             plane,
             first_row,
             first_offset,
-            spec.tiles_x - 1 if first_row < last_row else last_offset,
+            spec.tiles_horizontal - 1 if first_row < last_row else last_offset,
             color,
         )
         if last_row - first_row > 1:
-            cell_height = plane.height() / spec.tiles_y
+            cell_height = plane.height() / spec.tiles_vertical
             painter.fillRect(
                 QRectF(
                     plane.left(),
@@ -199,13 +205,13 @@ class MosaicOverview(QWidget):
         """Shade one contiguous traversal segment, mirroring odd serpentine rows."""
         spec = self._require_spec()
         if row % 2:
-            first_x = spec.tiles_x - 1 - last_offset
-            last_x = spec.tiles_x - 1 - first_offset
+            first_x = spec.tiles_horizontal - 1 - last_offset
+            last_x = spec.tiles_horizontal - 1 - first_offset
         else:
             first_x = first_offset
             last_x = last_offset
-        cell_width = plane.width() / spec.tiles_x
-        cell_height = plane.height() / spec.tiles_y
+        cell_width = plane.width() / spec.tiles_horizontal
+        cell_height = plane.height() / spec.tiles_vertical
         painter.fillRect(
             QRectF(
                 plane.left() + first_x * cell_width,
@@ -219,16 +225,20 @@ class MosaicOverview(QWidget):
     def _paint_grid(self, painter: QPainter, plane: QRectF) -> None:
         """Draw individual boundaries only while cells remain visually useful."""
         spec = self._require_spec()
-        cell_width = plane.width() / spec.tiles_x
-        cell_height = plane.height() / spec.tiles_y
+        cell_width = plane.width() / spec.tiles_horizontal
+        cell_height = plane.height() / spec.tiles_vertical
         painter.setPen(QPen(QColor("#666666"), 0.5))
         painter.drawRect(plane)
-        if cell_width < 3.0 or cell_height < 3.0 or spec.tiles_x + spec.tiles_y > 1000:
+        if (
+            cell_width < 3.0
+            or cell_height < 3.0
+            or spec.tiles_horizontal + spec.tiles_vertical > 1000
+        ):
             return
-        for x_index in range(1, spec.tiles_x):
+        for x_index in range(1, spec.tiles_horizontal):
             x = plane.left() + x_index * cell_width
             painter.drawLine(int(x), int(plane.top()), int(x), int(plane.bottom()))
-        for y_index in range(1, spec.tiles_y):
+        for y_index in range(1, spec.tiles_vertical):
             y = plane.top() + y_index * cell_height
             painter.drawLine(int(plane.left()), int(y), int(plane.right()), int(y))
 
@@ -236,16 +246,24 @@ class MosaicOverview(QWidget):
         """Convert an XY index into its one-based serpentine traversal number."""
         spec = self._require_spec()
         x_index, y_index = key
-        x_order = x_index if y_index % 2 == 0 else spec.tiles_x - 1 - x_index
-        return y_index * spec.tiles_x + x_order + 1
+        x_order = (
+            x_index
+            if y_index % 2 == 0
+            else spec.tiles_horizontal - 1 - x_index
+        )
+        return y_index * spec.tiles_horizontal + x_order + 1
 
     def _key_for_number(self, number: int) -> tuple[int, int]:
         """Convert a one-based serpentine number back into an XY index."""
         spec = self._require_spec()
         if number < 1 or number > spec.total_tiles:
             raise IndexError("mosaic traversal number is outside the overview")
-        y_index, x_order = divmod(number - 1, spec.tiles_x)
-        x_index = x_order if y_index % 2 == 0 else spec.tiles_x - 1 - x_order
+        y_index, x_order = divmod(number - 1, spec.tiles_horizontal)
+        x_index = (
+            x_order
+            if y_index % 2 == 0
+            else spec.tiles_horizontal - 1 - x_order
+        )
         return x_index, y_index
 
     def _require_spec(self) -> MosaicTilingSpec:

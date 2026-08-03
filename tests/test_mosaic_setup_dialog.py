@@ -6,7 +6,7 @@ from pytestqt.qtbot import QtBot
 
 from acq_staging.configuration import default_simulation_config
 from acq_staging.gui.mosaic_setup_dialog import MosaicSetupDialog
-from acq_staging.models import AxisName, LimitsConfig, Pose
+from acq_staging.models import AxisName, LimitsConfig, MosaicOrientation, Pose
 
 
 def test_setup_exposes_two_independent_xy_tilings_without_z_steps(qtbot: QtBot) -> None:
@@ -50,6 +50,28 @@ def test_setup_builds_independent_geometry_and_rounds_endpoints(qtbot: QtBot) ->
     assert spec.tiling_two.z_mm == 8.0
     assert spec.tiling_two.rotation_deg == 45.0
     assert spec.safe_transition_z_mm == 20.0
+
+
+def test_setup_freezes_profile_orientation_and_previews_top_left(qtbot: QtBot) -> None:
+    config = default_simulation_config()
+    orientation = MosaicOrientation(AxisName.X, 1, AxisName.Y, -1)
+    mosaic = replace(config.mosaic, orientation=orientation)
+    dialog = MosaicSetupDialog(
+        mosaic, config.components, Pose(0.0, 0.0, 5.0, 0.0)
+    )
+    qtbot.addWidget(dialog)
+
+    # Opposite corners are order-independent; the profile determines physical top-left.
+    first = dialog.fields[0]
+    first["step_x"].setValue(1.0)
+    first["step_y"].setValue(1.0)
+    first["stop_x"].setValue(2.0)
+    first["stop_y"].setValue(1.0)
+    spec = dialog.build_spec()
+
+    assert spec.tiling_one.orientation == orientation
+    assert spec.tiling_one.controller_position(0, 0) == (0.0, 1.0)
+    assert "top-left (0.0, 1.0)" in dialog.summaries[0].text()
 
 
 def test_resume_selector_uses_selected_tiling_tile_count(qtbot: QtBot) -> None:

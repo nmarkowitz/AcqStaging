@@ -247,8 +247,37 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Initialize the configured movement request HIGH when Start Mosaic begins.
 - [ ] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 23 — Profile-defined physical mosaic orientation
+
+- [x] Store validated physical-right and physical-down controller axis/sign
+  mappings in schema-version-7 application profiles.
+- [x] Start every tiling at logical top-left and preserve row-wise serpentine
+  order for inverted or swapped controller X/Y mounting.
+- [x] Keep controller-axis step fields positive while applying profile signs to
+  planned destinations, including negative travel.
+- [x] Show logical rows and columns consistently in setup previews, progress,
+  resume numbering, and audit details.
+- [ ] Run the complete simulated suite, Ruff, and mypy.
+
 ## Current session
 
+- Added schema-version-7 mosaic orientation mappings so profiles define which
+  signed controller axes correspond to physical right and down. Tiling plans,
+  setup previews, progress grids, resume numbering, and audit records now use
+  the same logical top-left serpentine order.
+- Both maintained hardware profiles map physical right to X+ and physical down
+  to Y- for the reported bottom-left controller home. The simulation profile
+  retains X+/Y+ behavior, and older profiles migrate to that prior default.
+- Orientation-focused verification passes with 60 tests; the broader safe run
+  passes with 101 tests selected and four unrelated tests excluded/deselected.
+  The complete command cannot safely finish because the current standalone
+  NI-DAQ script creates tasks at import time, while three configuration tests
+  still reference the pre-existing missing `configs/hardware.example.json`.
+  Scoped Ruff and mypy pass; repository-wide Ruff/mypy remain blocked by that
+  NI-DAQ script and the pre-existing syntax error in `scripts/nidaq_testing.py`.
+- No stage was connected, homed, moved, or stopped. The initial normal-suite
+  attempt imported the pre-existing NI-DAQ script, attempted DAQ task creation,
+  and hung; the process was terminated and no new Python process remains.
 - Replaced the earlier idle-LOW Ready/Done exchange with the OCT protocol:
   movement output HIGH idle, LOW request, OCT input HIGH acquisition start, OCT
   input LOW first-image completion, then movement output HIGH reset.

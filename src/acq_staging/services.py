@@ -233,7 +233,15 @@ class MotionService:
         x_mm, y_mm, z_mm, theta_deg = x_value, y_value, z_value, theta_value
         config = self.config.mosaic
         first = MosaicTilingSpec.from_endpoints(
-            config.step_x_mm, config.step_y_mm, x_mm, y_mm, x_mm, y_mm, z_mm, 0.0
+            config.step_x_mm,
+            config.step_y_mm,
+            x_mm,
+            y_mm,
+            x_mm,
+            y_mm,
+            z_mm,
+            0.0,
+            config.orientation,
         )
         second = MosaicTilingSpec.from_endpoints(
             config.step_x_mm,
@@ -244,6 +252,7 @@ class MotionService:
             y_mm,
             z_mm,
             theta_deg,
+            config.orientation,
         )
         return MosaicSequenceSpec(first, second, z_mm)
 
@@ -254,19 +263,21 @@ class MotionService:
     ) -> list[MosaicTile]:
         """Plan one fixed-Z, fixed-rotation serpentine XY tiling."""
         tiles: list[MosaicTile] = []
-        for y_index in range(spec.tiles_y):
-            x_indices = range(spec.tiles_x)
-            if y_index % 2:
-                x_indices = range(spec.tiles_x - 1, -1, -1)
-            for x_index in x_indices:
+        for row in range(spec.tiles_vertical):
+            columns = range(spec.tiles_horizontal)
+            if row % 2:
+                columns = range(spec.tiles_horizontal - 1, -1, -1)
+            for column in columns:
+                # Logical row and column preserve top-left serpentine order for every mounting.
+                x_mm, y_mm = spec.controller_position(column, row)
                 tiles.append(
                     MosaicTile(
-                        spec.coordinate(0, x_index),
-                        spec.coordinate(1, y_index),
+                        x_mm,
+                        y_mm,
                         spec.z_mm,
                         spec.rotation_deg,
-                        x_index,
-                        y_index,
+                        column,
+                        row,
                         tiling_index,
                     )
                 )
@@ -595,6 +606,13 @@ class MotionService:
                 "ending_mm": list(tiling.ending),
                 "steps_mm": list(tiling.steps),
                 "tile_counts": list(tiling.tile_counts),
+                "logical_tile_counts": list(tiling.logical_tile_counts),
+                "orientation": {
+                    "right_axis": tiling.orientation.right_axis.value,
+                    "right_sign": tiling.orientation.right_sign,
+                    "down_axis": tiling.orientation.down_axis.value,
+                    "down_sign": tiling.orientation.down_sign,
+                },
                 "z_mm": tiling.z_mm,
                 "rotation_deg": tiling.rotation_deg,
             }

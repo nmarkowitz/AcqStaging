@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "profile_name": "Default Simulation",
   "connections": {},
   "components": {
@@ -65,7 +65,13 @@
     "step_y_mm": 2.8,
     "settling_time_s": 2.0,
     "dwell_time_s": 0.0,
-    "operation_timeout_s": 3600.0
+    "operation_timeout_s": 3600.0,
+    "orientation": {
+      "right_axis": "x",
+      "right_sign": 1,
+      "down_axis": "y",
+      "down_sign": 1
+    }
   },
   "digital_io": {
     "digital_in": {

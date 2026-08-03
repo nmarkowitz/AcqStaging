@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from math import ceil, isclose, isfinite
@@ -130,6 +130,31 @@ class MosaicTile:
 
 
 @dataclass(frozen=True, slots=True)
+class MosaicOrientation:
+    """Map logical right/down directions onto signed controller X/Y axes."""
+
+    right_axis: AxisName = AxisName.X
+    right_sign: int = 1
+    down_axis: AxisName = AxisName.Y
+    down_sign: int = 1
+
+    def __post_init__(self) -> None:
+        # A planar orientation must assign X and Y exactly once without using rotation or Z.
+        if {self.right_axis, self.down_axis} != {AxisName.X, AxisName.Y}:
+            raise ValueError("mosaic orientation must assign controller X and Y exactly once")
+        if self.right_sign not in (-1, 1) or self.down_sign not in (-1, 1):
+            raise ValueError("mosaic orientation signs must be -1 or 1")
+
+    def axis_index(self, axis: AxisName) -> int:
+        """Return the controller-coordinate tuple index for X or Y."""
+        if axis is AxisName.X:
+            return 0
+        if axis is AxisName.Y:
+            return 1
+        raise ValueError("mosaic orientation supports only X and Y")
+
+
+@dataclass(frozen=True, slots=True)
 class MosaicTilingSpec:
     """One endpoint-defined XY tiling at fixed Z and rotation positions."""
 
@@ -143,6 +168,7 @@ class MosaicTilingSpec:
     end_y_mm: float
     z_mm: float
     rotation_deg: float
+    orientation: MosaicOrientation = field(default_factory=MosaicOrientation)
 
     def __post_init__(self) -> None:
         # Reject non-finite destinations before any service can preflight motion.
@@ -174,6 +200,7 @@ class MosaicTilingSpec:
         end_y_mm: float,
         z_mm: float,
         rotation_deg: float,
+        orientation: MosaicOrientation | None = None,
     ) -> MosaicTilingSpec:
         """Create XY geometry with outward endpoint rounding on each axis."""
         # Convert each inclusive span into a tile count without changing its step.
@@ -211,6 +238,7 @@ class MosaicTilingSpec:
             ending[1],
             z_mm,
             rotation_deg,
+            MosaicOrientation() if orientation is None else orientation,
         )
 
     @property
@@ -239,6 +267,23 @@ class MosaicTilingSpec:
         return self.tiles_x * self.tiles_y
 
     @property
+    def logical_tile_counts(self) -> tuple[int, int]:
+        """Return physical screen columns and rows after applying profile orientation."""
+        right_index = self.orientation.axis_index(self.orientation.right_axis)
+        down_index = self.orientation.axis_index(self.orientation.down_axis)
+        return (self.tile_counts[right_index], self.tile_counts[down_index])
+
+    @property
+    def tiles_horizontal(self) -> int:
+        """Return the number of logical columns from physical left to right."""
+        return self.logical_tile_counts[0]
+
+    @property
+    def tiles_vertical(self) -> int:
+        """Return the number of logical rows from physical top to bottom."""
+        return self.logical_tile_counts[1]
+
+    @property
     def extents_mm(self) -> tuple[float, float]:
         """Return signed XY travel from the beginning to the rounded ending."""
         return (self.end_x_mm - self.begin_x_mm, self.end_y_mm - self.begin_y_mm)
@@ -254,6 +299,30 @@ class MosaicTilingSpec:
             return end
         direction = 1.0 if end >= begin else -1.0
         return begin + tile_index * direction * self.steps[axis_index]
+
+    def controller_position(self, column: int, row: int) -> tuple[float, float]:
+        """Map one logical top-left grid index into controller-home XY coordinates."""
+        if not 0 <= column < self.tiles_horizontal:
+            raise IndexError("mosaic column is outside the resolved grid")
+        if not 0 <= row < self.tiles_vertical:
+            raise IndexError("mosaic row is outside the resolved grid")
+
+        # Resolve logical right and down independently before returning fixed X/Y order.
+        values: dict[AxisName, float] = {}
+        for axis, tile_index, sign in (
+            (self.orientation.right_axis, column, self.orientation.right_sign),
+            (self.orientation.down_axis, row, self.orientation.down_sign),
+        ):
+            axis_index = self.orientation.axis_index(axis)
+            low = min(self.beginning[axis_index], self.ending[axis_index])
+            high = max(self.beginning[axis_index], self.ending[axis_index])
+            count = self.tile_counts[axis_index]
+            if tile_index == count - 1:
+                values[axis] = high if sign > 0 else low
+            else:
+                start = low if sign > 0 else high
+                values[axis] = start + tile_index * sign * self.steps[axis_index]
+        return (values[AxisName.X], values[AxisName.Y])
 
     @staticmethod
     def _count_for_endpoints(axis: str, begin: float, end: float, step: float) -> int:

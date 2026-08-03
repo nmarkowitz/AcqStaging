@@ -11,6 +11,7 @@ from acq_staging.gui.mosaic_progress_dialog import (
 )
 from acq_staging.models import (
     AxisName,
+    MosaicOrientation,
     MosaicProgress,
     MosaicSequenceSpec,
     MosaicTile,
@@ -122,6 +123,24 @@ def test_large_tilings_fit_without_scroll_or_child_tiles(qtbot: QtBot) -> None:
     last = view.overview.tile_rect((159, 99))
     assert last.width() > 0 and last.height() > 0
     assert view.overview.rect().contains(last.center().toPoint())
+
+
+def test_overview_uses_logical_rows_and_columns_when_axes_are_swapped(
+    qtbot: QtBot,
+) -> None:
+    orientation = MosaicOrientation(AxisName.Y, 1, AxisName.X, -1)
+    first = MosaicTilingSpec.from_endpoints(
+        1.0, 1.0, 0.0, 10.0, 1.0, 12.0, 5.0, 0.0, orientation
+    )
+    view = MosaicProgressDialog(MosaicSequenceSpec(first, first, 20.0))
+    qtbot.addWidget(view)
+
+    # Three physical columns come from controller Y and two rows come from X.
+    assert first.logical_tile_counts == (3, 2)
+    assert view.overview._traversal_number((2, 0)) == 3
+    assert view.overview._traversal_number((2, 1)) == 4
+    assert view.overview._key_for_number(6) == (0, 1)
+    assert view.overview.tile_rect((2, 1)).isValid()
 
 
 def test_overview_paints_completed_and_current_shading(qtbot: QtBot) -> None:
