@@ -1,4 +1,5 @@
 from dataclasses import replace
+from threading import Event, Thread
 
 import pytest
 
@@ -314,11 +315,102 @@ def test_sequence_timeout_stops_full_operation() -> None:
         service.run_mosaic_sequence(one_tile)
 
 
-def test_stop_mosaic_requests_stop_from_rotation_too() -> None:
+def test_pause_blocks_next_tile_until_continue() -> None:
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 30.0),
+    )
+    service = ready_service(config)
+    paused = Event()
+    second_tile_started = Event()
+    errors: list[Exception] = []
+    spec = make_sequence(first_stop_x=1.0, run_tiling_two=False)
+
+    def record_event(event: str, details: dict[str, object]) -> None:
+        # Pause from the worker callback immediately after the first tile completes.
+        if event == "TILE_COMPLETE" and details["tile"] == 1:
+            service.pause_mosaic()
+            paused.set()
+        if event == "TILE_START" and details["tile"] == 2:
+            second_tile_started.set()
+
+    def run_sequence() -> None:
+        # Capture worker-thread failures so the test can report them in the main thread.
+        try:
+            service.run_mosaic_sequence(spec, on_event=record_event)
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = Thread(target=run_sequence, daemon=True)
+    worker.start()
+    try:
+        assert paused.wait(2.0)
+        assert not second_tile_started.wait(0.1)
+
+        # Continue releases the safe-boundary gate and permits the next tile to begin.
+        service.continue_mosaic()
+        worker.join(2.0)
+    finally:
+        # A failed assertion must not strand a paused background thread during pytest exit.
+        if worker.is_alive():
+            service.cancel_mosaic()
+            worker.join(2.0)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert second_tile_started.is_set()
+
+
+def test_cancel_mosaic_requests_stop_from_rotation_too() -> None:
     service = ready_service()
     rotation = service.axes[AxisName.ROTATION]
     assert isinstance(rotation, SimulatedMotionAxis)
 
-    service.stop_mosaic()
+    service.cancel_mosaic()
 
     assert rotation.status().busy is False
+
+
+def test_cancel_releases_a_paused_mosaic_worker() -> None:
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 30.0),
+    )
+    service = ready_service(config)
+    paused = Event()
+    errors: list[Exception] = []
+    spec = make_sequence(first_stop_x=1.0, run_tiling_two=False)
+
+    def pause_after_first_tile(event: str, details: dict[str, object]) -> None:
+        # Pause at a deterministic tile boundary before cancellation is requested.
+        if event == "TILE_COMPLETE" and details["tile"] == 1:
+            service.pause_mosaic()
+            paused.set()
+
+    def run_sequence() -> None:
+        # Preserve the terminal cancellation error for assertion in this thread.
+        try:
+            service.run_mosaic_sequence(spec, on_event=pause_after_first_tile)
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = Thread(target=run_sequence, daemon=True)
+    worker.start()
+    assert paused.wait(2.0)
+
+    # Cancel clears the pause gate and wakes the worker without requiring Continue.
+    service.cancel_mosaic()
+    worker.join(2.0)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert "cancelled" in str(errors[0])
+
+
+def test_pause_and_continue_require_an_active_mosaic() -> None:
+    service = ready_service()
+
+    with pytest.raises(MotionSafetyError, match="no mosaic sequence"):
+        service.pause_mosaic()
+    with pytest.raises(MotionSafetyError, match="no mosaic sequence"):
+        service.continue_mosaic()

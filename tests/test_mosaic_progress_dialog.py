@@ -106,6 +106,35 @@ def test_single_tiling_run_reports_single_completion(qtbot: QtBot) -> None:
     assert view.status_label.text() == "Single-tiling mosaic run complete"
 
 
+def test_pause_continue_and_cancel_controls_follow_run_state(qtbot: QtBot) -> None:
+    view = MosaicProgressDialog(sequence())
+    qtbot.addWidget(view)
+
+    assert view.pause_button.isEnabled()
+    assert not view.continue_button.isEnabled()
+    assert view.cancel_button.isEnabled()
+
+    # Pause immediately changes the visible controls while the service reaches a boundary.
+    with qtbot.waitSignal(view.pause_requested):
+        view.pause_button.click()
+    assert not view.pause_button.isEnabled()
+    assert view.continue_button.isEnabled()
+    assert view.cancel_button.isEnabled()
+    assert "Pause requested" in view.status_label.text()
+
+    # Continue restores the running state without disabling cancellation.
+    with qtbot.waitSignal(view.continue_requested):
+        view.continue_button.click()
+    assert view.pause_button.isEnabled()
+    assert not view.continue_button.isEnabled()
+    assert view.cancel_button.isEnabled()
+
+    view.mark_finished()
+    assert not view.pause_button.isEnabled()
+    assert not view.continue_button.isEnabled()
+    assert not view.cancel_button.isEnabled()
+
+
 def test_large_tilings_fit_without_scroll_or_child_tiles(qtbot: QtBot) -> None:
     first = MosaicTilingSpec.from_endpoints(
         1.0, 1.0, 0.0, 0.0, 159.0, 99.0, 5.0, 0.0

@@ -52,7 +52,9 @@ def test_window_exposes_explicit_mosaic_controls(qtbot: QtBot) -> None:
     qtbot.addWidget(window)
 
     assert window.findChild(QPushButton, "start_mosaic") is not None
-    assert window.findChild(QPushButton, "stop_mosaic") is not None
+    assert window.findChild(QPushButton, "stop_mosaic") is None
+    assert window.findChild(QPushButton, "pause_mosaic") is not None
+    assert window.findChild(QPushButton, "continue_mosaic") is not None
     assert window.findChild(QPushButton, "cancel_mosaic") is not None
     viewer_dock = window.findChild(QDockWidget, "axis_mosaic_dock")
     assert viewer_dock is not None

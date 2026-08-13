@@ -195,6 +195,8 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Require all four axes connected/homed and preflight the complete path.
 - [x] Remove the temporary origin/reset workflow and use controller coordinates.
 - [x] Preserve one audit stream, optional per-tile DAQ handshaking, and cancellation.
+- [x] Provide Pause, Continue, and Cancel in the attached viewer without a duplicate
+  Stop Mosaic toolbar action.
 
 ### Phase 16 — Current-tiling viewer and timing
 

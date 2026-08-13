@@ -93,15 +93,12 @@ class MainWindow(QMainWindow):
         home_all = QPushButton("Home All: X → Y → Z → Rotation")
         start_mosaic = QPushButton("Start Mosaic")
         start_mosaic.setObjectName("start_mosaic")
-        stop_mosaic = QPushButton("Stop Mosaic")
-        stop_mosaic.setObjectName("stop_mosaic")
         toolbar.addWidget(edit_button)
         toolbar.addStretch()
         toolbar.addWidget(connect_all)
         toolbar.addWidget(disconnect_all)
         toolbar.addWidget(home_all)
         toolbar.addWidget(start_mosaic)
-        toolbar.addWidget(stop_mosaic)
         root_layout.addLayout(toolbar)
 
         self.pose_label = QLabel("[—, —, —, —]")
@@ -158,7 +155,8 @@ class MainWindow(QMainWindow):
         )
         home_all.clicked.connect(self.request_home_all)
         start_mosaic.clicked.connect(self.request_mosaic)
-        stop_mosaic.clicked.connect(self.request_cancel_mosaic)
+        self.axis_mosaic_view.pause_requested.connect(self.request_pause_mosaic)
+        self.axis_mosaic_view.continue_requested.connect(self.request_continue_mosaic)
         self.axis_mosaic_view.cancel_requested.connect(self.request_cancel_mosaic)
 
         # Timer ticks enqueue pose polling and never block the Qt event loop.
@@ -457,7 +455,7 @@ class MainWindow(QMainWindow):
     def _mosaic_failed(self, message: str) -> None:
         self._mosaic_had_error = True
         self.axis_mosaic_view.mark_failed(message)
-        if "mosaic stopped" in message.lower():
+        if "mosaic cancelled" in message.lower():
             self._append_log("Mosaic cancelled by user")
         else:
             self._show_error(message)
@@ -479,11 +477,23 @@ class MainWindow(QMainWindow):
         for direction, panel in self.digital_panels.items():
             panel.setEnabled(self.config.digital_io[direction].enabled)
 
+    def request_pause_mosaic(self) -> None:
+        """Audit and asynchronously request a safe-boundary mosaic pause."""
+        if self._mosaic_logger is not None:
+            self._mosaic_logger.log("MOSAIC_PAUSE_REQUESTED", {})
+        self._run("Pause mosaic", self.service.pause_mosaic)
+
+    def request_continue_mosaic(self) -> None:
+        """Audit and asynchronously release the mosaic pause gate."""
+        if self._mosaic_logger is not None:
+            self._mosaic_logger.log("MOSAIC_CONTINUE_REQUESTED", {})
+        self._run("Continue mosaic", self.service.continue_mosaic)
+
     def request_cancel_mosaic(self) -> None:
         """Audit and asynchronously stop the active mosaic."""
         if self._mosaic_logger is not None:
             self._mosaic_logger.log("MOSAIC_CANCEL_REQUESTED", {})
-        self._run("Cancel mosaic", self.service.stop_mosaic)
+        self._run("Cancel mosaic", self.service.cancel_mosaic)
 
     def edit_configuration(self) -> None:
         # The dialog owns file validation; this method applies only accepted profiles.

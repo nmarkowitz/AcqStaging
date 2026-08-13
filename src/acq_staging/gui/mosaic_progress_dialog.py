@@ -276,6 +276,8 @@ class MosaicOverview(QWidget):
 class AxisMosaicView(QWidget):
     """Display controller-home axis positions and the active tiling overview."""
 
+    pause_requested = pyqtSignal()
+    continue_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
 
     def __init__(
@@ -292,6 +294,7 @@ class AxisMosaicView(QWidget):
         self._last_completion_at: float | None = None
         self._completed_tiles: set[int] = set()
         self._recent_tile_durations_s: deque[float] = deque(maxlen=8)
+        self._pause_requested = False
         self.status_label = QLabel("No mosaic configured")
         self.status_label.setObjectName("mosaic_progress_status")
         self.axis_labels: dict[AxisName, QLabel] = {}
@@ -310,13 +313,24 @@ class AxisMosaicView(QWidget):
             column.addWidget(value)
             axes.addLayout(column)
 
-        self.cancel_button = QPushButton("Cancel Mosaic")
+        # Pause and Continue are mutually exclusive while Cancel remains available.
+        self.pause_button = QPushButton("Pause")
+        self.pause_button.setObjectName("pause_mosaic")
+        self.pause_button.setEnabled(False)
+        self.pause_button.clicked.connect(self._request_pause)
+        self.continue_button = QPushButton("Continue")
+        self.continue_button.setObjectName("continue_mosaic")
+        self.continue_button.setEnabled(False)
+        self.continue_button.clicked.connect(self._request_continue)
+        self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setObjectName("cancel_mosaic")
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
         header = QHBoxLayout()
         header.addWidget(self.status_label)
         header.addStretch()
+        header.addWidget(self.pause_button)
+        header.addWidget(self.continue_button)
         header.addWidget(self.cancel_button)
 
         # A single overview is reused if the automatic sequence changes tilings.
@@ -377,7 +391,8 @@ class AxisMosaicView(QWidget):
             f"Preparing full run from Tiling {run_spec.resume_tiling}, "
             f"tile {run_spec.resume_tile}"
         )
-        self.cancel_button.setEnabled(True)
+        self._pause_requested = False
+        self._set_run_controls(active=True, paused=False)
 
     def update_progress(self, progress: MosaicProgress) -> None:
         """Show only the active tiling and update timing after completed tiles."""
@@ -390,10 +405,12 @@ class AxisMosaicView(QWidget):
             MosaicTilePhase.ACQUIRING: "Awaiting acquisition for",
             MosaicTilePhase.COMPLETE: "Completed",
         }
-        self.status_label.setText(
-            f"{actions[progress.phase]} Tiling {progress.tiling_number}, "
-            f"tile {progress.number}/{progress.total}"
-        )
+        # Preserve pause feedback while an in-flight step reports its final progress.
+        if not self._pause_requested:
+            self.status_label.setText(
+                f"{actions[progress.phase]} Tiling {progress.tiling_number}, "
+                f"tile {progress.number}/{progress.total}"
+            )
         # Completion occurs after dwell or DAQ acknowledgement, so it measures acquisition time.
         if progress.phase is MosaicTilePhase.COMPLETE:
             self._update_timing(progress)
@@ -405,12 +422,37 @@ class AxisMosaicView(QWidget):
             self.status_label.setText("Two-tiling mosaic run complete")
         else:
             self.status_label.setText("Single-tiling mosaic run complete")
-        self.cancel_button.setEnabled(False)
+        self._pause_requested = False
+        self._set_run_controls(active=False, paused=False)
 
     def mark_failed(self, message: str) -> None:
         """Keep final shading visible and show the terminal reason."""
-        self.status_label.setText(f"Mosaic stopped: {message}")
-        self.cancel_button.setEnabled(False)
+        if "cancel" in message.lower():
+            self.status_label.setText("Mosaic cancelled")
+        else:
+            self.status_label.setText(f"Mosaic failed: {message}")
+        self._pause_requested = False
+        self._set_run_controls(active=False, paused=False)
+
+    def _request_pause(self) -> None:
+        """Show immediate feedback and ask orchestration to pause safely."""
+        self._pause_requested = True
+        self.status_label.setText("Pause requested; finishing the current step")
+        self._set_run_controls(active=True, paused=True)
+        self.pause_requested.emit()
+
+    def _request_continue(self) -> None:
+        """Restore running controls and release the service pause gate."""
+        self._pause_requested = False
+        self.status_label.setText("Continuing mosaic")
+        self._set_run_controls(active=True, paused=False)
+        self.continue_requested.emit()
+
+    def _set_run_controls(self, *, active: bool, paused: bool) -> None:
+        """Keep the three mosaic actions consistent with the visible run state."""
+        self.pause_button.setEnabled(active and not paused)
+        self.continue_button.setEnabled(active and paused)
+        self.cancel_button.setEnabled(active)
 
     def _begin_tiling(self, tiling_number: int, start_tile: int) -> None:
         """Switch the reusable overview and reset estimates for the new tiling."""

@@ -66,6 +66,7 @@ class MotionService:
         self.acquisition_handshake = acquisition_handshake
         self._pose = Pose.empty()
         self._mosaic_stop = threading.Event()
+        self._mosaic_pause = threading.Event()
         self._mosaic_lock = threading.Lock()
         self._mosaic_deadline: float | None = None
 
@@ -339,6 +340,7 @@ class MotionService:
         if not self._mosaic_lock.acquire(blocking=False):
             raise MotionSafetyError("a mosaic sequence is already running")
         self._mosaic_stop.clear()
+        self._mosaic_pause.clear()
         self._mosaic_deadline = time.monotonic() + self.config.mosaic.operation_timeout_s
         handshake_started = False
         active_tiling: int | None = None
@@ -408,11 +410,26 @@ class MotionService:
             if handshake_started and self.acquisition_handshake is not None:
                 self.acquisition_handshake.finish()
             self._mosaic_deadline = None
+            self._mosaic_pause.clear()
             self._mosaic_lock.release()
 
-    def stop_mosaic(self) -> None:
+    def pause_mosaic(self) -> None:
+        """Request a pause at the next safe mosaic orchestration boundary."""
+        if not self._mosaic_lock.locked():
+            raise MotionSafetyError("no mosaic sequence is running")
+        self._mosaic_pause.set()
+
+    def continue_mosaic(self) -> None:
+        """Release a paused mosaic so worker-thread orchestration can continue."""
+        if not self._mosaic_lock.locked():
+            raise MotionSafetyError("no mosaic sequence is running")
+        self._mosaic_pause.clear()
+
+    def cancel_mosaic(self) -> None:
         """Cancel the full sequence and request a stop from all four axes."""
+        # Release the pause gate so cancellation is observed without waiting for Continue.
         self._mosaic_stop.set()
+        self._mosaic_pause.clear()
         if self.acquisition_handshake is not None:
             with suppress(Exception):
                 self.acquisition_handshake.abort()
@@ -630,21 +647,45 @@ class MotionService:
         }
 
     def _interruptible_wait(self, duration_s: float) -> None:
-        """Wait while remaining responsive to cancellation and the full-run deadline."""
+        """Wait while remaining responsive to pause, cancellation, and the deadline."""
         self._require_mosaic_running()
         wait_end = time.monotonic() + duration_s
         if self._mosaic_deadline is not None:
             wait_end = min(wait_end, self._mosaic_deadline)
         while (remaining := wait_end - time.monotonic()) > 0:
-            if self._mosaic_stop.wait(remaining):
-                raise AdapterError("mosaic stopped")
+            # Poll briefly so Pause can freeze settling or dwell without consuming it.
+            if self._mosaic_stop.wait(min(remaining, 0.05)):
+                raise AdapterError("mosaic cancelled")
+            paused_s = self._wait_if_mosaic_paused()
+            wait_end += paused_s
         self._require_mosaic_running()
 
     def _require_mosaic_running(self) -> None:
+        """Block at a pause boundary, then enforce cancellation and timeout."""
         if self._mosaic_stop.is_set():
-            raise AdapterError("mosaic stopped")
+            raise AdapterError("mosaic cancelled")
+        self._wait_if_mosaic_paused()
+        if self._mosaic_stop.is_set():
+            raise AdapterError("mosaic cancelled")
         if self._mosaic_deadline is not None and time.monotonic() >= self._mosaic_deadline:
             raise AdapterError("mosaic operation timed out")
+
+    def _wait_if_mosaic_paused(self) -> float:
+        """Wait on the worker thread and exclude acknowledged pause time from timeout."""
+        if not self._mosaic_pause.is_set():
+            return 0.0
+
+        # A short cancellation-aware poll keeps Cancel responsive while paused.
+        paused_at = time.monotonic()
+        while self._mosaic_pause.is_set():
+            if self._mosaic_stop.wait(0.05):
+                raise AdapterError("mosaic cancelled")
+        paused_s = time.monotonic() - paused_at
+
+        # Extend the whole-run deadline only after orchestration reaches the pause gate.
+        if self._mosaic_deadline is not None:
+            self._mosaic_deadline += paused_s
+        return paused_s
 
     def _axis(self, axis: AxisName) -> MotionAxis:
         try:

@@ -180,7 +180,7 @@ class DaqTileHandshake:
         interval_s = self.config.polling_interval_ms / 1000.0
         while True:
             if stop_event.is_set():
-                raise AdapterError("mosaic stopped during acquisition handshake")
+                raise AdapterError("mosaic cancelled during acquisition handshake")
             now = time.monotonic()
             effective_deadline = min(
                 phase_deadline,

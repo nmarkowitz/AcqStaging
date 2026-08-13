@@ -204,8 +204,13 @@ X -> Y -> Z -> Rotation
   movement. Physical paths are submitted to Zaber or Kinesis without an
   application travel-limit precheck, so the vendor controller remains the
   authority.
-- **Cancel Mosaic** in the attached viewer and **Stop Mosaic** in the toolbar
-  cancel waits and request a stop from X, Y, Z, and Rotation.
+- **Pause** in the attached viewer pauses at the next safe orchestration boundary.
+  An in-flight vendor move or DAQ handshake finishes first; no later movement,
+  wait, transition, or tile begins until **Continue** is selected. Paused time
+  after reaching that boundary does not consume the whole-mosaic timeout.
+- **Cancel** remains available while running or paused. It cancels waits and
+  requests a stop from X, Y, Z, and Rotation. The duplicate **Stop Mosaic**
+  toolbar control has been removed.
 - With acquisition handshaking enabled, each settled tile is held orange while
   movement waits for acquisition Done before marking the tile complete.
 
