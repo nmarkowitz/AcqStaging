@@ -197,6 +197,8 @@ Hardware-marked tests are never run without an explicit user request.
 - [x] Preserve one audit stream, optional per-tile DAQ handshaking, and cancellation.
 - [x] Provide Pause, Continue, and Cancel in the attached viewer without a duplicate
   Stop Mosaic toolbar action.
+- [x] Write a complete settings preamble first and log every mosaic coordinate as
+  an explicit absolute controller-home position.
 
 ### Phase 16 — Current-tiling viewer and timing
 

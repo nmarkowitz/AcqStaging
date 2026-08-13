@@ -408,7 +408,9 @@ class MainWindow(QMainWindow):
             self._show_error("a mosaic is already running")
             return
         try:
-            logger = MosaicAuditLogger()
+            # Constructor-level initialization guarantees settings occupy the first line.
+            settings = self.service.mosaic_audit_settings(run_spec)
+            logger = MosaicAuditLogger(initial_settings=settings)
         except Exception as exc:
             self._show_error(f"Unable to create mosaic log: {exc}")
             return

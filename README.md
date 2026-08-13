@@ -751,11 +751,18 @@ logs/mosaics/YYYY_MM_DD_HH-mm-ss.log
 ```
 
 Every line contains a local ISO timestamp, event name, and compact JSON details.
-Events include full-run and per-tiling start/failure/completion, resume tiling and
-tile, XY indices and controller-coordinate XY/Z/rotation targets, transition and
-acquisition movements, observed completion positions, reused positions, settling
-and dwell boundaries, acquisition Ready/Done transitions, timeout failures, and
-tile completion.
+The first line is always `MOSAIC_SETTINGS`; it records the profile, all configured
+mosaic defaults, effective per-run tiling geometry, enabled tilings, resume point,
+settling/dwell/operation timeouts, acquisition-handshake settings, and configured
+velocity and acceleration for X, Y, Z, and Rotation with explicit units.
+All logged movement and tiling coordinates use absolute controller-home positions
+and carry explicit `absolute_*` field names; no coordinate is relative to the
+mosaic's starting position. `FULL_RUN_START` is not emitted because the settings
+preamble already defines the run. Later events include full-run completion or
+failure, per-tiling start/failure/completion, tile indices and absolute XY/Z/rotation targets,
+transition and acquisition movements, absolute observed completion positions,
+settling and dwell boundaries, acquisition Ready/Done transitions, timeout
+failures, and tile completion.
 Successful Digital Out writes include their pin states and source.
 
 Common errors:

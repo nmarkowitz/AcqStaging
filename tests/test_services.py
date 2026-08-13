@@ -197,7 +197,10 @@ def test_sequence_runs_first_then_safe_rotation_transition_then_second() -> None
         for event, details in events[second_start:]
         if event == "MOVEMENT_START"
     ]
-    assert [(item["axis"], item["destination"]) for item in second_moves[:3]] == [
+    assert [
+        (item["axis"], item["absolute_destination"])
+        for item in second_moves[:3]
+    ] == [
         ("z", 20.0),
         ("rotation", 45.0),
         ("z", 6.0),
@@ -231,13 +234,14 @@ def test_sequence_skips_disabled_second_tiling_entirely() -> None:
     assert {item.tiling_number for item in progress} == {1}
     starts = [details["tiling"] for event, details in events if event == "TILING_START"]
     assert starts == [1]
-    full_run = next(details for event, details in events if event == "FULL_RUN_START")
-    audited_tilings = full_run["tilings"]
+    settings = service.mosaic_audit_settings(spec)
+    audited_tilings = settings["tilings"]
     assert isinstance(audited_tilings, list)
     assert len(audited_tilings) == 1
     first_audit = audited_tilings[0]
     assert isinstance(first_audit, dict)
-    assert first_audit["logical_tile_counts"] == [1, 2]
+    assert first_audit["logical_tiles_horizontal"] == 1
+    assert first_audit["logical_tiles_vertical"] == 2
     assert first_audit["orientation"] == {
         "right_axis": "x",
         "right_sign": 1,
@@ -246,6 +250,43 @@ def test_sequence_skips_disabled_second_tiling_entirely() -> None:
     }
     assert progress[-1].overall_total == spec.tiling_one.total_tiles
     assert service.pose.as_vector() == (0.0, 1.0, 5.0, 0.0)
+    assert all(event != "FULL_RUN_START" for event, _details in events)
+
+
+def test_mosaic_audit_settings_include_rates_timing_and_absolute_geometry() -> None:
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.5, 2.5, 0.25, 0.75, 45.0),
+    )
+    service = ready_service(config)
+    spec = make_sequence(run_tiling_two=False)
+
+    settings = service.mosaic_audit_settings(spec)
+
+    assert settings["coordinate_reference"] == "absolute_controller_home"
+    assert settings["settling_time_s"] == 0.25
+    assert settings["dwell_time_s"] == 0.75
+    assert settings["operation_timeout_s"] == 45.0
+    assert settings["run_tiling_two"] is False
+    components = settings["components"]
+    assert isinstance(components, dict)
+    assert set(components) == {axis.value for axis in HOME_ORDER}
+    x_settings = components["x"]
+    rotation_settings = components["rotation"]
+    assert isinstance(x_settings, dict)
+    assert isinstance(rotation_settings, dict)
+    assert x_settings["velocity_units"] == "mm/s"
+    assert x_settings["acceleration_units"] == "mm/s^2"
+    assert rotation_settings["velocity_units"] == "deg/s"
+    assert rotation_settings["acceleration_units"] == "deg/s^2"
+    tilings = settings["tilings"]
+    assert isinstance(tilings, list)
+    first = tilings[0]
+    assert isinstance(first, dict)
+    assert first["absolute_beginning"] == {"x_mm": 0.0, "y_mm": 0.0}
+    assert first["absolute_ending"] == {"x_mm": 2.0, "y_mm": 1.0}
+    assert first["absolute_z_mm"] == 5.0
+    assert first["absolute_rotation_deg"] == 0.0
 
 
 def test_sequence_resume_from_second_skips_first_tiling() -> None:

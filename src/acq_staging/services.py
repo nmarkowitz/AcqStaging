@@ -351,8 +351,6 @@ class MotionService:
                 # DAQ ownership is acquired once and retained across all enabled tilings.
                 handshake.begin()
                 handshake_started = True
-            if on_event is not None:
-                on_event("FULL_RUN_START", self._sequence_details(spec, handshake_started))
 
             # Resume skips all earlier work while retaining absolute traversal numbering.
             for tiling_index in range(spec.resume_tiling - 1, len(spec.tilings)):
@@ -368,8 +366,8 @@ class MotionService:
                             "tiling": tiling_number,
                             "start_tile": start_tile,
                             "total_tiles": len(tiles),
-                            "z_mm": tiling.z_mm,
-                            "rotation_deg": tiling.rotation_deg,
+                            "absolute_z_mm": tiling.z_mm,
+                            "absolute_rotation_deg": tiling.rotation_deg,
                         },
                     )
                 self._transition_to_tiling(
@@ -492,10 +490,10 @@ class MotionService:
                 "overall_total": overall_total,
                 "x_index": tile.x_index,
                 "y_index": tile.y_index,
-                "x_mm": tile.x_mm,
-                "y_mm": tile.y_mm,
-                "z_mm": tile.z_mm,
-                "rotation_deg": tile.theta_deg,
+                "absolute_x_mm": tile.x_mm,
+                "absolute_y_mm": tile.y_mm,
+                "absolute_z_mm": tile.z_mm,
+                "absolute_rotation_deg": tile.theta_deg,
             }
             if on_event is not None:
                 on_event("TILE_START", details)
@@ -595,54 +593,112 @@ class MotionService:
         tolerance = self.config.components[axis].motion.position_tolerance
         if abs(current - destination) <= tolerance:
             if on_event is not None:
-                on_event("POSITION_REUSED", {**details, "position": current})
+                on_event("POSITION_REUSED", {**details, "absolute_position": current})
             return
         if on_event is not None:
             on_event(
                 "MOVEMENT_START",
-                {**details, "start": current, "destination": destination},
+                {
+                    **details,
+                    "absolute_start": current,
+                    "absolute_destination": destination,
+                },
             )
         self.move_absolute(axis, destination)
         observed = self.refresh_position(axis)
         if on_event is not None:
             on_event(
                 "MOVEMENT_COMPLETE",
-                {**details, "destination": destination, "observed": observed},
+                {
+                    **details,
+                    "absolute_destination": destination,
+                    "absolute_observed": observed,
+                },
             )
 
-    def _sequence_details(
-        self,
-        spec: MosaicSequenceSpec,
-        handshake_started: bool,
-    ) -> dict[str, object]:
-        """Build the complete normalized audit payload for one full run."""
+    def mosaic_audit_settings(self, spec: MosaicSequenceSpec) -> dict[str, object]:
+        """Build the complete settings preamble for a mosaic audit log."""
+        # Every per-run destination is an absolute controller-home coordinate.
         tilings = [
             {
                 "tiling": number,
-                "beginning_mm": list(tiling.beginning),
-                "ending_mm": list(tiling.ending),
-                "steps_mm": list(tiling.steps),
-                "tile_counts": list(tiling.tile_counts),
-                "logical_tile_counts": list(tiling.logical_tile_counts),
+                "absolute_beginning": {
+                    "x_mm": tiling.begin_x_mm,
+                    "y_mm": tiling.begin_y_mm,
+                },
+                "absolute_ending": {
+                    "x_mm": tiling.end_x_mm,
+                    "y_mm": tiling.end_y_mm,
+                },
+                "step_x_mm": tiling.step_x_mm,
+                "step_y_mm": tiling.step_y_mm,
+                "tiles_x": tiling.tiles_x,
+                "tiles_y": tiling.tiles_y,
+                "logical_tiles_horizontal": tiling.tiles_horizontal,
+                "logical_tiles_vertical": tiling.tiles_vertical,
                 "orientation": {
                     "right_axis": tiling.orientation.right_axis.value,
                     "right_sign": tiling.orientation.right_sign,
                     "down_axis": tiling.orientation.down_axis.value,
                     "down_sign": tiling.orientation.down_sign,
                 },
-                "z_mm": tiling.z_mm,
-                "rotation_deg": tiling.rotation_deg,
+                "absolute_z_mm": tiling.z_mm,
+                "absolute_rotation_deg": tiling.rotation_deg,
             }
             for number, tiling in enumerate(spec.tilings, start=1)
         ]
+
+        # Record configured motion rates for all axes with explicit linear/rotary units.
+        components = {}
+        for axis in HOME_ORDER:
+            component = self.config.components[axis]
+            linear = axis is not AxisName.ROTATION
+            components[axis.value] = {
+                "adapter": component.adapter.value,
+                "enabled": component.enabled,
+                "velocity": component.motion.velocity,
+                "velocity_units": "mm/s" if linear else "deg/s",
+                "acceleration": component.motion.acceleration,
+                "acceleration_units": "mm/s^2" if linear else "deg/s^2",
+            }
+
+        # Preserve profile defaults separately from the effective per-run tiling geometry.
+        configured_mosaic = self.config.mosaic
+        configured_orientation = configured_mosaic.orientation
+        handshake = self.config.acquisition_handshake
         return {
-            "coordinate_reference": "controller_home",
-            "safe_transition_z_mm": spec.safe_transition_z_mm,
+            "profile_name": self.config.profile_name,
+            "coordinate_reference": "absolute_controller_home",
+            "configured_mosaic_defaults": {
+                "step_x_mm": configured_mosaic.step_x_mm,
+                "step_y_mm": configured_mosaic.step_y_mm,
+                "settling_time_s": configured_mosaic.settling_time_s,
+                "dwell_time_s": configured_mosaic.dwell_time_s,
+                "operation_timeout_s": configured_mosaic.operation_timeout_s,
+                "orientation": {
+                    "right_axis": configured_orientation.right_axis.value,
+                    "right_sign": configured_orientation.right_sign,
+                    "down_axis": configured_orientation.down_axis.value,
+                    "down_sign": configured_orientation.down_sign,
+                },
+            },
+            "safe_transition_absolute_z_mm": spec.safe_transition_z_mm,
             "resume_tiling": spec.resume_tiling,
             "resume_tile": spec.resume_tile,
+            "run_tiling_two": spec.run_tiling_two,
             "total_tiles": spec.total_tiles,
-            "operation_timeout_s": self.config.mosaic.operation_timeout_s,
-            "acquisition_handshake": handshake_started,
+            "settling_time_s": configured_mosaic.settling_time_s,
+            "dwell_time_s": configured_mosaic.dwell_time_s,
+            "operation_timeout_s": configured_mosaic.operation_timeout_s,
+            "components": components,
+            "acquisition_handshake": {
+                "enabled": handshake.enabled,
+                "ready_output_line": handshake.ready_output_line,
+                "complete_input_line": handshake.complete_input_line,
+                "acquisition_timeout_s": handshake.acquisition_timeout_s,
+                "reset_timeout_s": handshake.reset_timeout_s,
+                "polling_interval_ms": handshake.polling_interval_ms,
+            },
             "tilings": tilings,
         }
 

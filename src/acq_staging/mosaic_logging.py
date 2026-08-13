@@ -16,6 +16,7 @@ class MosaicAuditLogger:
         self,
         directory: str | Path = "logs/mosaics",
         now: Callable[[], datetime] | None = None,
+        initial_settings: dict[str, object] | None = None,
     ) -> None:
         # Local time supplies both the required filename and readable event timestamps.
         self._now = now or (lambda: datetime.now().astimezone())
@@ -26,6 +27,9 @@ class MosaicAuditLogger:
         self._stream = self.path.open("x", encoding="utf-8", buffering=1)
         self._lock = threading.RLock()
         self._closed = False
+        # Production mosaic logs commit settings before any callback can append an event.
+        if initial_settings is not None:
+            self.log("MOSAIC_SETTINGS", initial_settings)
 
     def log(self, event: str, details: dict[str, object] | None = None) -> None:
         """Synchronously append an event with local timestamp and JSON details."""
