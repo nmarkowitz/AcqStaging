@@ -1,0 +1,147 @@
+{
+  "schema_version": 7,
+  "profile_name": "Hardware Example - Replace Every Placeholder",
+  "connections": {
+    "zaber-main": {
+      "port": "COM5",
+      "baud_rate": 115200
+    }
+  },
+  "components": {
+    "x": {
+      "enabled": true,
+      "adapter": "zaber_ascii",
+      "limits": null,
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 60.0
+      },
+      "connection_id": "zaber-main",
+      "serial_number": "128442",
+      "device_address": null,
+      "axis_number": 1,
+      "expected_model": null,
+      "device_settings_name": null,
+      "dll_directory": null,
+      "polling_interval_ms": 250,
+      "simulation_start": 0.0,
+      "simulation_latency_s": 0.0
+    },
+    "y": {
+      "enabled": true,
+      "adapter": "zaber_ascii",
+      "limits": null,
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 60.0
+      },
+      "connection_id": "zaber-main",
+      "serial_number": "126569",
+      "device_address": null,
+      "axis_number": 1,
+      "expected_model": null,
+      "device_settings_name": null,
+      "dll_directory": null,
+      "polling_interval_ms": 250,
+      "simulation_start": 0.0,
+      "simulation_latency_s": 0.0
+    },
+    "z": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 100.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
+        "position_tolerance": 0.01,
+        "operation_timeout_s": 30.0
+      },
+      "simulation_start": 0.0
+    },
+    "rotation": {
+      "enabled": true,
+      "adapter": "simulated",
+      "limits": {"minimum": 0.0, "maximum": 360.0},
+      "motion": {
+        "velocity": 10.0,
+        "acceleration": 20.0,
+        "jog_increment": 5.0,
+        "test_distance": 5.0,
+        "position_tolerance": 0.05,
+        "operation_timeout_s": 120.0
+      },
+      "connection_id": null,
+      "serial_number": "40531374",
+      "device_address": null,
+      "axis_number": 1,
+      "expected_model": "BSC101",
+      "device_settings_name": "HDR50",
+      "dll_directory": "C:\\Program Files\\Thorlabs\\Kinesis",
+      "polling_interval_ms": 250,
+      "simulation_start": 0.0,
+      "simulation_latency_s": 0.0
+    }
+  },
+  "ui": {
+    "pose_poll_interval_ms": 250,
+    "large_linear_move_mm": 10.0,
+    "large_rotation_move_deg": 30.0
+  },
+  "mosaic": {
+    "step_x_mm": 2.8,
+    "step_y_mm": 2.8,
+    "settling_time_s": 2.0,
+    "dwell_time_s": 0.0,
+    "operation_timeout_s": 3600.0,
+    "orientation": {
+      "right_axis": "x",
+      "right_sign": 1,
+      "down_axis": "y",
+      "down_sign": -1
+    }
+  },
+  "digital_io": {
+    "digital_in": {
+      "enabled": true,
+      "adapter": "nidaqmx",
+      "device": "Dev1",
+      "port": "P0",
+      "line_count": 8,
+      "lines": [
+        7
+      ],
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    },
+    "digital_out": {
+      "enabled": true,
+      "adapter": "nidaqmx",
+      "device": "Dev1",
+      "port": "P0",
+      "line_count": 8,
+      "lines": [
+        0
+      ],
+      "operation_timeout_s": 10.0,
+      "polling_interval_ms": 250
+    }
+  },
+  "acquisition_handshake": {
+    "enabled": true,
+    "ready_output_line": 0,
+    "complete_input_line": 7,
+    "acquisition_timeout_s": 3000.0,
+    "reset_timeout_s": 3000.0,
+    "polling_interval_ms": 20
+  }
+}

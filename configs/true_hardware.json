@@ -57,25 +57,16 @@
     "z": {
       "enabled": true,
       "adapter": "zaber_ascii",
-      "limits": null,
+      "limits": {"minimum": 0.0, "maximum": 100.0},
       "motion": {
-        "velocity": 5.0,
-        "acceleration": 25.0,
-        "jog_increment": 0.5,
-        "test_distance": 0.5,
+        "velocity": 10.0,
+        "acceleration": 50.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
         "position_tolerance": 0.01,
-        "operation_timeout_s": 60.0
+        "operation_timeout_s": 30.0
       },
-      "connection_id": "zaber-main",
-      "serial_number": "None",
-      "device_address": null,
-      "axis_number": 1,
-      "expected_model": null,
-      "device_settings_name": null,
-      "dll_directory": null,
-      "polling_interval_ms": 250,
-      "simulation_start": 0.0,
-      "simulation_latency_s": 0.0
+      "simulation_start": 0.0
     },
     "rotation": {
       "enabled": true,
@@ -149,8 +140,8 @@
     "enabled": true,
     "ready_output_line": 0,
     "complete_input_line": 7,
-    "acquisition_timeout_s": 300.0,
-    "reset_timeout_s": 30.0,
+    "acquisition_timeout_s": 3000.0,
+    "reset_timeout_s": 3000.0,
     "polling_interval_ms": 20
   }
 }
