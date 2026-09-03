@@ -6,9 +6,11 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_DIRECTORY = PROJECT_ROOT / "logs"
 
 def configure_logging(
-    directory: str | Path = "logs",
+    directory: str | Path = DEFAULT_LOG_DIRECTORY,
     filename: str = "acq_staging.log",
 ) -> Path:
     """Configure rotating application logs and return the log path."""

@@ -8,13 +8,15 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_DIRECTORY = PROJECT_ROOT / "logs"
 
 class MosaicAuditLogger:
     """Write one line-buffered, timestamped event stream for a mosaic run."""
 
     def __init__(
         self,
-        directory: str | Path = "logs/mosaics",
+        directory: str | Path = DEFAULT_LOG_DIRECTORY,
         now: Callable[[], datetime] | None = None,
         initial_settings: dict[str, object] | None = None,
     ) -> None:
