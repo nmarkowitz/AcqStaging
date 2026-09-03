@@ -107,7 +107,7 @@
       "right_axis": "x",
       "right_sign": 1,
       "down_axis": "y",
-      "down_sign": -1
+      "down_sign": 1
     }
   },
   "digital_io": {
