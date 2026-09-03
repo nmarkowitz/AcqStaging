@@ -21,7 +21,7 @@
         "operation_timeout_s": 60.0
       },
       "connection_id": "zaber-main",
-      "serial_number": "128442",
+      "serial_number": "126569",
       "device_address": null,
       "axis_number": 1,
       "expected_model": null,
@@ -44,7 +44,7 @@
         "operation_timeout_s": 60.0
       },
       "connection_id": "zaber-main",
-      "serial_number": "126569",
+      "serial_number": "128442",
       "device_address": null,
       "axis_number": 1,
       "expected_model": null,
