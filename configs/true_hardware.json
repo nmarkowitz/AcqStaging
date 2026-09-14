@@ -13,8 +13,8 @@
       "adapter": "zaber_ascii",
       "limits": null,
       "motion": {
-        "velocity": 10.0,
-        "acceleration": 50.0,
+        "velocity": 1.0,
+        "acceleration": 1.0,
         "jog_increment": 1.0,
         "test_distance": 1.0,
         "position_tolerance": 0.01,
@@ -36,8 +36,8 @@
       "adapter": "zaber_ascii",
       "limits": null,
       "motion": {
-        "velocity": 10.0,
-        "acceleration": 50.0,
+        "velocity": 1.0,
+        "acceleration": 1.0,
         "jog_increment": 1.0,
         "test_distance": 1.0,
         "position_tolerance": 0.01,
@@ -59,24 +59,33 @@
       "adapter": "zaber_ascii",
       "limits": {"minimum": 0.0, "maximum": 100.0},
       "motion": {
-        "velocity": 10.0,
-        "acceleration": 50.0,
+        "velocity": 1.0,
+        "acceleration": 1.0,
         "jog_increment": 1.0,
         "test_distance": 1.0,
         "position_tolerance": 0.01,
         "operation_timeout_s": 30.0
       },
-      "simulation_start": 0.0
+      "connection_id": "zaber-main",
+      "serial_number": "152090",
+      "device_address": null,
+      "axis_number": 1,
+      "expected_model": null,
+      "device_settings_name": null,
+      "dll_directory": null,
+      "polling_interval_ms": 250,
+      "simulation_start": 0.0,
+      "simulation_latency_s": 0.0
     },
     "rotation": {
       "enabled": true,
       "adapter": "thorlabs_bsc101",
       "limits": null,
       "motion": {
-        "velocity": 10.0,
-        "acceleration": 20.0,
-        "jog_increment": 5.0,
-        "test_distance": 5.0,
+        "velocity": 1.0,
+        "acceleration": 1.0,
+        "jog_increment": 1.0,
+        "test_distance": 1.0,
         "position_tolerance": 0.05,
         "operation_timeout_s": 120.0
       },
