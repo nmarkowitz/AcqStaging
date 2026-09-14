@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from acq_staging.adapters.thorlabs import ThorlabsBSC101Stage
 from acq_staging.configuration import (
     ComponentConfig,
@@ -27,6 +29,8 @@ class FakeChannel:
         self.MotorDeviceSettings = SimpleNamespace()
         self.settings_read = False
         self.configuration_updated = False
+        self.velocity_params: tuple[object, object] | None = None
+        self.reject_velocity_params = False
 
     def IsSettingsInitialized(self) -> bool:
         return True
@@ -54,8 +58,12 @@ class FakeChannel:
         assert settings is self.MotorDeviceSettings
         self.settings_read = True
 
-    def SetVelocityParams(self, _velocity: object, _acceleration: object) -> None:
-        return None
+    def SetVelocityParams(self, velocity: object, acceleration: object) -> None:
+        # Require settings initialization before overriding the loaded motion defaults.
+        assert self.configuration_updated
+        if self.reject_velocity_params:
+            raise RuntimeError("velocity parameters rejected")
+        self.velocity_params = (velocity, acceleration)
 
     def Home(self, callback: Any) -> int:
         self.Status.IsHomed = True
@@ -138,6 +146,10 @@ def test_bsc101_adapter_uses_channel_one_and_callback_motion() -> None:
     stage = ThorlabsBSC101Stage(component, facade)
 
     stage.connect()
+    # Connection must apply distinct supplied values in vendor order without motion.
+    assert facade.channel.velocity_params == (10.0, 20.0)
+    assert not facade.channel.Status.IsHomed
+    assert facade.channel.Position == 0.0
     stage.identify()
     stage.home()
     stage.move_absolute(720.0)
@@ -155,6 +167,30 @@ def test_bsc101_adapter_uses_channel_one_and_callback_motion() -> None:
     stage.disconnect()
     assert facade.channel.polling_stopped
     assert facade.controller.disconnected
+
+
+def test_bsc101_adapter_cleans_up_when_motion_settings_are_rejected() -> None:
+    # Use a fake vendor rejection to verify partial connection cleanup without hardware.
+    component = ComponentConfig(
+        True,
+        AdapterType.THORLABS_BSC101,
+        None,
+        MotionConfig(7.5, 12.25, 5.0, 5.0, 0.05, 1.0),
+        serial_number="40000001",
+        axis_number=1,
+        device_settings_name="HDR50",
+        dll_directory="unused-by-fake",
+    )
+    facade = FakeFacade()
+    facade.channel.reject_velocity_params = True
+    stage = ThorlabsBSC101Stage(component, facade)
+
+    # Preserve the vendor error and leave no connected adapter or polling session.
+    with pytest.raises(RuntimeError, match="velocity parameters rejected"):
+        stage.connect()
+    assert facade.channel.polling_stopped
+    assert facade.controller.disconnected
+    assert not stage.status().connected
 
 
 def test_bsc101_adapter_rejects_wrong_stage_settings_and_cleans_up() -> None:

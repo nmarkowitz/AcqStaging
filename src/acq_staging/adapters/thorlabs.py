@@ -138,6 +138,11 @@ class ThorlabsBSC101Stage:
                 raise AdapterError("rotation: Kinesis actuator is not defined")
             if not bool(channel.IsMotorSettingsValid):
                 raise AdapterError("rotation: Kinesis motor settings are invalid")
+            # Override loaded motion defaults in degrees/s and degrees/s² without persisting.
+            channel.SetVelocityParams(
+                self.facade.decimal(self.config.motion.velocity),
+                self.facade.decimal(self.config.motion.acceleration),
+            )
             self._controller = controller
             self._channel = channel
             self._motor_configuration = motor_configuration
