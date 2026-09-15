@@ -178,7 +178,8 @@ X -> Y -> Z -> Rotation
   0 degrees; Tiling 2 has an editable rotation angle. **Run Tiling 2 after
   Tiling 1** is checked by default; clear it to acquire only Tiling 1.
 - **Safe transition Z** is the Z position used before changing rotation between
-  tilings. After rotation reaches its target, Z moves to that tiling's fixed
+  tilings. At safe Z, X and Y move to the previous tiling's center before rotation.
+  After rotation reaches its target, Z moves to that tiling's fixed
   acquisition position.
 - Endpoint geometry supports increasing or decreasing travel independently on
   X and Y. If an end is between valid steps, it is extended outward to the next
@@ -394,8 +395,11 @@ produce one position.
 Each enabled tiling starts at physical top-left, snakes toward physical right,
 and advances downward after each row while Z remains fixed. If selected,
 Tiling 2 begins automatically only after Tiling 1 completes successfully. When
-the rotation target changes, the service moves Z to Safe transition Z, changes
-rotation, then moves Z to the next fixed acquisition position. The successful
+the rotation target changes between tilings, the service moves Z to Safe transition Z,
+then X and Y to the center of the previous tiling, changes rotation, and moves Z
+to the next fixed acquisition position. The center is the midpoint of the previous
+tiling's normalized XY endpoints, including when resuming at Tiling 2. No centering
+move is added when rotation stays unchanged or when entering Tiling 1. The successful
 run ends at the last enabled tiling's last tile rather than returning home.
 
 The legacy tilt-mosaic, vibratome, dual-Z, cut, notification, and acquisition

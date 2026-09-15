@@ -27,6 +27,8 @@
 - Settings are stored in versioned JSON application profiles, never vendor device memory.
 - Diagnostics are non-motion by default; motion tests require confirmation and return to their starting point.
 - Normal tests use simulation or mocks.
+- Between tilings, a required rotation change follows safe Z, then the previous
+  tiling's XY midpoint, then rotation, then acquisition Z; this also applies on resume.
 
 ## Verified API ledger
 

@@ -199,15 +199,53 @@ def test_sequence_runs_first_then_safe_rotation_transition_then_second() -> None
     ]
     assert [
         (item["axis"], item["absolute_destination"])
-        for item in second_moves[:3]
+        for item in second_moves[:5]
     ] == [
         ("z", 20.0),
+        ("x", 1.0),
+        ("y", 0.5),
         ("rotation", 45.0),
         ("z", 6.0),
     ]
     assert service.pose.as_vector() == (10.0, 11.0, 6.0, 45.0)
     assert progress[-1].tiling_number == 2
     assert progress[-1].phase is MosaicTilePhase.COMPLETE
+
+
+@pytest.mark.parametrize("resume_tiling", [1, 2])
+@pytest.mark.parametrize("reject_center", [False, True])
+def test_rotation_waits_for_previous_tiling_center(
+    resume_tiling: int, reject_center: bool,
+) -> None:
+    # Distinct tiling centers expose accidental use of the next tiling's geometry.
+    config = replace(
+        default_simulation_config(),
+        mosaic=MosaicConfig(1.0, 1.0, 0.0, 0.0, 30.0),
+    )
+    service = ready_service(config)
+    spec = make_sequence(resume_tiling=resume_tiling)
+    rotation_started = False
+
+    def record_event(event: str, details: dict[str, object]) -> None:
+        nonlocal rotation_started
+        # A failed centering step must prevent rotation and the second acquisition.
+        if event != "MOVEMENT_START":
+            return
+        if details["stage"] == "rotation_center" and reject_center:
+            raise RuntimeError("centering failed")
+        if details["stage"] == "rotation_target":
+            assert service.pose.as_vector()[:3] == (1.0, 0.5, 20.0)
+            rotation_started = True
+
+    # Exercise both normal traversal and direct resume through the same transition.
+    if reject_center:
+        with pytest.raises(RuntimeError, match="centering failed"):
+            service.run_mosaic_sequence(spec, on_event=record_event)
+        assert not rotation_started
+        assert service.pose.theta_deg == 0.0
+    else:
+        service.run_mosaic_sequence(spec, on_event=record_event)
+        assert rotation_started
 
 
 def test_sequence_skips_disabled_second_tiling_entirely() -> None:

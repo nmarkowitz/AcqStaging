@@ -371,7 +371,8 @@ class MotionService:
                         },
                     )
                 self._transition_to_tiling(
-                    tiling_number, tiling, spec.safe_transition_z_mm, on_event
+                    tiling_number, tiling, spec.safe_transition_z_mm, on_event,
+                    spec.tilings[tiling_index - 1] if tiling_index > 0 else None,
                 )
                 self._run_tiling(
                     tiling_number,
@@ -441,8 +442,9 @@ class MotionService:
         tiling: MosaicTilingSpec,
         safe_z_mm: float,
         on_event: Callable[[str, dict[str, object]], None] | None,
+        previous_tiling: MosaicTilingSpec | None = None,
     ) -> None:
-        """Move through safe Z when rotation must change, then set the fixed tiling Z."""
+        """Reach safe Z and the previous tiling center before changing rotation."""
         self._require_mosaic_running()
         if on_event is not None:
             on_event("TRANSITION_START", {"tiling": tiling_number})
@@ -453,6 +455,16 @@ class MotionService:
             self._move_sequence_axis(
                 AxisName.Z, safe_z_mm, tiling_number, None, "safe_rotation_z", on_event
             )
+            # The midpoint stays inside the previously preflighted XY bounds, even on resume.
+            if previous_tiling is not None:
+                for axis, begin, end in (
+                    (AxisName.X, previous_tiling.begin_x_mm, previous_tiling.end_x_mm),
+                    (AxisName.Y, previous_tiling.begin_y_mm, previous_tiling.end_y_mm),
+                ):
+                    self._move_sequence_axis(
+                        axis, begin / 2.0 + end / 2.0, tiling_number, None,
+                        "rotation_center", on_event,
+                    )
             self._move_sequence_axis(
                 AxisName.ROTATION,
                 tiling.rotation_deg,
