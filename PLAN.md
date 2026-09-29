@@ -265,7 +265,26 @@ Hardware-marked tests are never run without an explicit user request.
   resume numbering, and audit details.
 - [ ] Run the complete simulated suite, Ruff, and mypy.
 
+### Phase 24 — Prepare for Imaging / Slicing presets
+
+- [x] Add a versioned `configs/stage_presets.json` with an ordered axis list and
+  imaging/slicing absolute destinations; slicing runs the order in reverse.
+- [x] Add confirmed Prepare for Imaging and Prepare for Slicing toolbar buttons that
+  run sequential single-axis moves in a worker after connection/homing/limit
+  preflight. Stop every listed axis on the first failure, with no retry.
+- [ ] Run the complete simulated suite, Ruff, and mypy (blocked by the same
+  pre-existing failures noted below).
+
 ## Current session
+
+- Added Prepare for Imaging / Prepare for Slicing. Preset tests pass (25). With
+  `tests/test_nidaq_movement_handshake_script.py` excluded, because it creates
+  NI-DAQ tasks at import time, the suite reports 133 passed and 8 failed. The
+  same 8 fail without the change: 4 need the missing
+  `configs/hardware.example.json`, and 4 rotation-transition tests expect the
+  XY midpoint the latest commit replaced with the tiling beginning. `mypy src
+  tests` passes. Repository Ruff/mypy remain blocked by pre-existing script
+  errors and the B007 left by that commit. No hardware was accessed.
 
 - Added schema-version-7 mosaic orientation mappings so profiles define which
   signed controller axes correspond to physical right and down. Tiling plans,

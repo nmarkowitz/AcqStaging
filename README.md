@@ -172,6 +172,15 @@ end-to-end inter-process operation requires correctly wired NI-DAQ lines.
 X -> Y -> Z -> Rotation
 ```
 
+- **Prepare for Imaging** and **Prepare for Slicing** move the stages to the
+  positions defined in `configs/stage_presets.json`, one axis at a time.
+  Imaging uses the file's `imaging_order`; slicing uses the same order
+  reversed. The file is re-read on every press, and a confirmation lists each
+  ordered move before anything runs. Every listed axis must be connected and
+  homed; simulated destinations are checked against their synthetic limits
+  before the first move. A failed, stopped, or short move ends the sequence,
+  requests a stop from every listed axis, and shows an error. Nothing is retried.
+  See [Stage preset file](#stage-preset-file).
 - **Start Mosaic** opens one setup window with a required Tiling 1 and an
   optional Tiling 2. Each tiling has independent X/Y beginning and end
   positions, X/Y step sizes, and a fixed Z position. Tiling 1 is fixed at
@@ -327,6 +336,7 @@ Included profiles:
 - `configs/hardware.example.json`: hardware template containing placeholders
 - `configs/dummy_acquirer.simulation.json`: safe standalone dummy profile
 - `configs/dummy_acquirer.hardware.example.json`: placeholder dummy NI-DAQ profile
+- `configs/stage_presets.json`: Prepare for Imaging / Prepare for Slicing positions
 
 Do not use `hardware.example.json` unchanged.
 
@@ -352,6 +362,32 @@ a profile-level physical right/down mapping; older profiles migrate to the
 previous `right = X+`, `down = Y+` traversal. Migrated profiles save as schema
 version 7. Older profiles still require the documented `mosaic` and
 `digital_io` sections.
+
+### Stage preset file
+
+`configs/stage_presets.json` is separate from the application profile and is
+never written by the GUI:
+
+```json
+{
+  "schema_version": 1,
+  "imaging_order": ["x", "y", "rotation", "z"],
+  "positions": {
+    "imaging": {"x": 150.0, "y": 150.0, "rotation": 0.0, "z": 50.0},
+    "slicing": {"x": 10.0, "y": 10.0, "rotation": 0.0, "z": 5.0}
+  }
+}
+```
+
+- `imaging_order`: axes moved by **Prepare for Imaging**, first to last. Each
+  axis may appear once. Axes you leave out are not moved. **Prepare for
+  Slicing** moves the same axes in reverse order.
+- `positions.imaging` and `positions.slicing`: absolute controller-home
+  destinations for exactly the axes in `imaging_order`. X, Y, and Z use
+  millimetres; rotation uses degrees.
+
+The committed values are simulation placeholders. Replace them with reviewed
+laboratory positions before using a hardware profile.
 
 ### Digital I/O settings
 
@@ -607,6 +643,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 | `test_configuration_dialog.py` | Structured fields, tooltips, validation, and profile file actions. |
 | `test_mosaic_progress_dialog.py` | Single current-grid layout, timing estimates, resume shading, and progress colors. |
 | `test_mosaic_setup_dialog.py` | Two-tiling geometry, endpoint rounding, simulation limits, and unbounded hardware fields. |
+| `test_stage_presets.py` | Preset file validation and round trip, reversed slicing order, sequential moves, connection/homing/limit preflight, failure stop, and Prepare button confirmation. |
 | `test_mosaic_logging.py` | Timestamped mosaic filename and chronological event format. |
 | `test_diagnostics.py` | Non-motion diagnostics and the acknowledgement required for home or motion. |
 | `test_zaber_adapter.py` | Serial-number matching, model/device-limit validation, Zaber units, nonblocking command arguments, and connection cleanup using fakes. |

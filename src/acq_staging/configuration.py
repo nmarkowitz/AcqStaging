@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from copy import deepcopy
@@ -18,6 +19,7 @@ from acq_staging.models import (
     DigitalAdapterType,
     DigitalDirection,
     MosaicOrientation,
+    StagePreset,
 )
 from acq_staging.models import (
     LimitsConfig as LimitsConfig,
@@ -25,6 +27,8 @@ from acq_staging.models import (
 
 SCHEMA_VERSION = 7
 DUMMY_ACQUIRER_SCHEMA_VERSION = 1
+STAGE_PRESETS_SCHEMA_VERSION = 1
+DEFAULT_STAGE_PRESETS_PATH = Path(__file__).resolve().parents[2] / "configs" / "stage_presets.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +394,61 @@ class DummyAcquirerConfig:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class StagePresetsConfig:
+    """Imaging and slicing poses plus the ordered axis moves between them."""
+
+    schema_version: int
+    imaging_order: tuple[AxisName, ...]
+    positions: dict[StagePreset, dict[AxisName, float]]
+
+    def validate(self) -> None:
+        if self.schema_version != STAGE_PRESETS_SCHEMA_VERSION:
+            raise ConfigurationError(
+                "schema_version: expected "
+                f"{STAGE_PRESETS_SCHEMA_VERSION}, got {self.schema_version}"
+            )
+        if not self.imaging_order:
+            raise ConfigurationError("imaging_order: must list at least one axis")
+        if len(set(self.imaging_order)) != len(self.imaging_order):
+            raise ConfigurationError("imaging_order: each axis may appear only once")
+        if set(self.positions) != set(StagePreset):
+            raise ConfigurationError("positions: imaging and slicing are both required")
+        # Every preset must name exactly the ordered axes so no move is implied or ignored.
+        for preset, targets in self.positions.items():
+            if set(targets) != set(self.imaging_order):
+                raise ConfigurationError(
+                    f"positions.{preset.value}: must define exactly the axes in imaging_order"
+                )
+            for axis, value in targets.items():
+                if not math.isfinite(value):
+                    raise ConfigurationError(
+                        f"positions.{preset.value}.{axis.value}: must be finite"
+                    )
+
+    def order(self, preset: StagePreset) -> tuple[AxisName, ...]:
+        """Return the move order; slicing reverses the imaging order."""
+        if preset is StagePreset.IMAGING:
+            return self.imaging_order
+        return tuple(reversed(self.imaging_order))
+
+    def moves(self, preset: StagePreset) -> tuple[tuple[AxisName, float], ...]:
+        """Return ordered absolute controller-home destinations for one preset."""
+        targets = self.positions[preset]
+        return tuple((axis, targets[axis]) for axis in self.order(preset))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the presets to a JSON-compatible dictionary."""
+        return {
+            "schema_version": self.schema_version,
+            "imaging_order": [axis.value for axis in self.imaging_order],
+            "positions": {
+                preset.value: {axis.value: value for axis, value in targets.items()}
+                for preset, targets in self.positions.items()
+            },
+        }
+
+
 def _mapping(value: object, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ConfigurationError(f"{field}: expected an object")
@@ -570,6 +629,54 @@ def dummy_acquirer_config_from_dict(raw: object) -> DummyAcquirerConfig:
         raise ConfigurationError(str(exc)) from exc
     config.validate()
     return config
+
+
+def _parse_preset_position(value: object, field: str) -> float:
+    # Reject booleans and strings rather than coercing them into a motion target.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    raise ConfigurationError(f"{field}: expected a number")
+
+
+def stage_presets_from_dict(raw: object) -> StagePresetsConfig:
+    """Parse and validate an imaging/slicing preset dictionary."""
+    data = _mapping(raw, "stage presets")
+    try:
+        order_raw = data["imaging_order"]
+        if not isinstance(order_raw, list):
+            raise ConfigurationError("imaging_order: expected a list of axis names")
+        positions = {
+            StagePreset(name): {
+                AxisName(axis): _parse_preset_position(value, f"positions.{name}.{axis}")
+                for axis, value in _mapping(targets, f"positions.{name}").items()
+            }
+            for name, targets in _mapping(data["positions"], "positions").items()
+        }
+        config = StagePresetsConfig(
+            schema_version=int(data["schema_version"]),
+            imaging_order=tuple(AxisName(axis) for axis in order_raw),
+            positions=positions,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError(str(exc)) from exc
+    config.validate()
+    return config
+
+
+def load_stage_presets(path: str | Path = DEFAULT_STAGE_PRESETS_PATH) -> StagePresetsConfig:
+    """Load and validate the imaging/slicing preset file."""
+    presets_path = Path(path)
+    try:
+        raw = json.loads(presets_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigurationError(f"{presets_path}: {exc}") from exc
+    return stage_presets_from_dict(raw)
+
+
+def save_stage_presets(config: StagePresetsConfig, path: str | Path) -> None:
+    """Atomically save a validated imaging/slicing preset file."""
+    config.validate()
+    _atomic_save(config.to_dict(), path)
 
 
 def load_config(path: str | Path) -> AppConfig:

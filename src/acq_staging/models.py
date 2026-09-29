@@ -51,6 +51,13 @@ class AdapterType(StrEnum):
     THORLABS_BSC101 = "thorlabs_bsc101"
 
 
+class StagePreset(StrEnum):
+    """Named whole-system positions reached by an ordered sequence of axis moves."""
+
+    IMAGING = "imaging"
+    SLICING = "slicing"
+
+
 class DigitalDirection(StrEnum):
     """Supported digital I/O component directions."""
 

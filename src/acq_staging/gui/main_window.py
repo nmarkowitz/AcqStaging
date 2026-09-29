@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
@@ -25,8 +26,10 @@ from PyQt6.QtWidgets import (
 from acq_staging.acquisition import DaqTileHandshake
 from acq_staging.adapters.zaber import ZaberConnectionManager
 from acq_staging.configuration import (
+    DEFAULT_STAGE_PRESETS_PATH,
     AppConfig,
     default_simulation_config,
+    load_stage_presets,
 )
 from acq_staging.factory import build_axes, build_digital_devices, build_simulation_axes
 from acq_staging.gui.axis_panel import AxisPanel
@@ -45,6 +48,7 @@ from acq_staging.models import (
     MosaicSequenceSpec,
     MosaicTile,
     Pose,
+    StagePreset,
 )
 from acq_staging.mosaic_logging import MosaicAuditLogger
 from acq_staging.services import DigitalIOService, MotionService
@@ -53,10 +57,15 @@ from acq_staging.services import DigitalIOService, MotionService
 class MainWindow(QMainWindow):
     """Main application window, safely initialized with simulations."""
 
-    def __init__(self, config: AppConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        stage_presets_path: str | Path = DEFAULT_STAGE_PRESETS_PATH,
+    ) -> None:
         super().__init__()
         # Startup accepts simulation profiles only and performs no automatic connection.
         self.config = config or default_simulation_config()
+        self.stage_presets_path = Path(stage_presets_path)
         self._cached_mosaic_spec: MosaicSequenceSpec | None = None
         self.digital_service = DigitalIOService(
             self.config,
@@ -94,11 +103,17 @@ class MainWindow(QMainWindow):
         home_all = QPushButton("Home All: X → Y → Z → Rotation")
         start_mosaic = QPushButton("Start Mosaic")
         start_mosaic.setObjectName("start_mosaic")
+        prepare_imaging = QPushButton("Prepare for Imaging")
+        prepare_imaging.setObjectName("prepare_imaging")
+        prepare_slicing = QPushButton("Prepare for Slicing")
+        prepare_slicing.setObjectName("prepare_slicing")
         toolbar.addWidget(edit_button)
         toolbar.addStretch()
         toolbar.addWidget(connect_all)
         toolbar.addWidget(disconnect_all)
         toolbar.addWidget(home_all)
+        toolbar.addWidget(prepare_imaging)
+        toolbar.addWidget(prepare_slicing)
         toolbar.addWidget(start_mosaic)
         root_layout.addLayout(toolbar)
 
@@ -156,6 +171,12 @@ class MainWindow(QMainWindow):
         )
         home_all.clicked.connect(self.request_home_all)
         start_mosaic.clicked.connect(self.request_mosaic)
+        prepare_imaging.clicked.connect(
+            lambda: self.request_stage_preset(StagePreset.IMAGING)
+        )
+        prepare_slicing.clicked.connect(
+            lambda: self.request_stage_preset(StagePreset.SLICING)
+        )
         self.axis_mosaic_view.pause_requested.connect(self.request_pause_mosaic)
         self.axis_mosaic_view.continue_requested.connect(self.request_continue_mosaic)
         self.axis_mosaic_view.cancel_requested.connect(self.request_cancel_mosaic)
@@ -285,6 +306,44 @@ class MainWindow(QMainWindow):
         )
         worker.signals.failed.connect(self._show_error)
         worker.signals.finished.connect(lambda: self._operation_finished(worker, "Home all"))
+        self.thread_pool.start(worker)
+
+    def request_stage_preset(self, preset: StagePreset) -> None:
+        """Confirm and run the ordered moves for one preset from the preset file."""
+        # Reload on every request so edits to the file apply without restarting.
+        try:
+            moves = load_stage_presets(self.stage_presets_path).moves(preset)
+        except Exception as exc:
+            self._show_error(f"Unable to load stage presets: {exc}")
+            return
+        steps = "\n".join(
+            f"{number}. {axis.value.upper()} -> {destination:.4f} "
+            f"{'deg' if axis is AxisName.ROTATION else 'mm'}"
+            for number, (axis, destination) in enumerate(moves, start=1)
+        )
+        label = preset.value.capitalize()
+        if not self._confirm(
+            f"Confirm Prepare for {label}",
+            f"Move one axis at a time in this order?\n\n{steps}",
+        ):
+            return
+        worker: FunctionWorker
+
+        def execute() -> list[AxisName]:
+            return self.service.move_to_preset(moves, worker.signals.progress.emit)
+
+        # One worker preserves strict move order while progress updates remain responsive.
+        worker = FunctionWorker(execute)
+        self._workers.add(worker)
+        worker.signals.progress.connect(
+            lambda axis: self.app_status_bar.showMessage(
+                f"Prepare for {label}: moving {axis.value.upper()}"
+            )
+        )
+        worker.signals.failed.connect(self._show_error)
+        worker.signals.finished.connect(
+            lambda: self._operation_finished(worker, f"Prepare for {label}")
+        )
         self.thread_pool.start(worker)
 
     def request_absolute_move(self, axis: AxisName, destination: float) -> None:

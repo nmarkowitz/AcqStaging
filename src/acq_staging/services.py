@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -208,6 +208,51 @@ class MotionService:
         if abs(adapter.get_position() - start) > config.motion.position_tolerance:
             raise AdapterError(f"{axis.value}: failed to return to test start")
         return start, target
+
+    def move_to_preset(
+        self,
+        moves: Sequence[tuple[AxisName, float]],
+        on_progress: Callable[[AxisName], None] | None = None,
+    ) -> list[AxisName]:
+        """Move axes one at a time, in the given order, to preset destinations."""
+        # Presets and mosaics share one run lock so two sequences never interleave.
+        if not self._mosaic_lock.acquire(blocking=False):
+            raise MotionSafetyError("another automated sequence is already running")
+        try:
+            # Preflight every participating axis before the first motion command.
+            for axis, destination in moves:
+                if not self.config.components[axis].enabled:
+                    raise MotionSafetyError(f"{axis.value}: disabled; preset requires it")
+                status = self._axis(axis).status()
+                if not status.connected:
+                    raise MotionSafetyError(f"{axis.value}: not connected")
+                if not status.homed:
+                    raise MotionSafetyError(f"{axis.value}: must be homed before a preset move")
+                limits = self.axis_limits(axis)
+                if limits is not None and not limits.contains(destination):
+                    raise MotionSafetyError(
+                        f"{axis.value}: preset destination {destination} is outside "
+                        "simulation limits"
+                    )
+            completed: list[AxisName] = []
+            try:
+                for axis, destination in moves:
+                    if on_progress is not None:
+                        on_progress(axis)
+                    self.move_absolute(axis, destination)
+                    # A stopped or short move ends the sequence instead of continuing blindly.
+                    tolerance = self.config.components[axis].motion.position_tolerance
+                    if abs(self.refresh_position(axis) - destination) > tolerance:
+                        raise AdapterError(f"{axis.value}: preset destination was not reached")
+                    completed.append(axis)
+            except Exception:
+                for axis, _destination in moves:
+                    with suppress(Exception):
+                        self.stop(axis)
+                raise
+            return completed
+        finally:
+            self._mosaic_lock.release()
 
     def mosaic_readiness(self) -> tuple[tuple[AxisName, ...], tuple[AxisName, ...]]:
         """Return disconnected and unhomed axes required by the full sequence."""
