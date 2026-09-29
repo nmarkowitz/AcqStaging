@@ -373,7 +373,15 @@ ports use `CHAN_FOR_ALL_LINES` with an integer bitmask. Pin subsets use
 ### Mosaic settings
 
 The profile stores defaults for the **Start Mosaic** setup window. Per-run edits
-do not change the active profile or a saved JSON file:
+do not change the active profile or a saved JSON file.
+
+Settings accepted with **Review Full Motion** are remembered when **Start Mosaic**
+is reopened during the same application session, including both tilings, the
+optional second-tiling choice, safe Z, and resume controls. Cancelled edits do not
+replace these settings. Applying a profile or restarting the application resets
+the remembered settings. Every run still requires motion review and confirmation.
+
+Profile defaults include:
 
 - `step_x_mm` and `step_y_mm`: default distance between XY tile positions
 - `settling_time_s`: wait after reaching a tile before reporting it ready

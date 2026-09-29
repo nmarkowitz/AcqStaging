@@ -461,8 +461,12 @@ class MotionService:
                     (AxisName.X, previous_tiling.begin_x_mm, previous_tiling.end_x_mm),
                     (AxisName.Y, previous_tiling.begin_y_mm, previous_tiling.end_y_mm),
                 ):
+                    # self._move_sequence_axis(
+                    #     axis, begin / 2.0 + end / 2.0, tiling_number, None,
+                    #     "rotation_center", on_event,
+                    # )
                     self._move_sequence_axis(
-                        axis, begin / 2.0 + end / 2.0, tiling_number, None,
+                        axis, begin, tiling_number, None,
                         "rotation_center", on_event,
                     )
             self._move_sequence_axis(

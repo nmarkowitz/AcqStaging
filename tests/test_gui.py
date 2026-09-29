@@ -9,8 +9,58 @@ from acq_staging.configuration import default_simulation_config
 from acq_staging.gui.axis_panel import AxisPanel
 from acq_staging.gui.dummy_acquirer_window import DummyAcquirerWindow
 from acq_staging.gui.main_window import MainWindow
+from acq_staging.gui.mosaic_setup_dialog import MosaicSetupDialog
 from acq_staging.gui.workers import FunctionWorker
 from acq_staging.models import AdapterType, AxisName, DigitalDirection, DigitalStatus
+
+
+@pytest.mark.parametrize("second_enabled", [True, False])
+def test_mosaic_settings_survive_reopening_and_cancel(
+    qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, second_enabled: bool
+) -> None:
+    # Exercise the real editor without connecting devices or starting a motion worker.
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    def accept_settings(dialog: MosaicSetupDialog) -> int:
+        dialog.fields[0]["stop_x"].setValue(5.6)
+        dialog.fields[1]["stop_y"].setValue(5.6)
+        dialog.fields[1]["z"].setValue(8.0)
+        dialog.fields[1]["rotation"].setValue(45.0)
+        dialog.safe_z_box.setValue(20.0)
+        dialog.run_tiling_two.setChecked(second_enabled)
+        dialog.resume_tiling.setCurrentIndex(1 if second_enabled else 0)
+        dialog.resume_tile.setValue(3)
+        dialog._accept_valid_geometry()
+        return dialog.result()
+
+    monkeypatch.setattr(MosaicSetupDialog, "exec", accept_settings)
+    accepted = window._get_mosaic_run_spec()
+    assert accepted is not None
+
+    # Reopening restores every value; cancelling new edits must not replace the cache.
+    def cancel_edits(dialog: MosaicSetupDialog) -> int:
+        assert dialog.build_spec() == accepted
+        dialog.safe_z_box.setValue(10.0)
+        dialog.reject()
+        return dialog.result()
+
+    monkeypatch.setattr(MosaicSetupDialog, "exec", cancel_edits)
+    assert window._get_mosaic_run_spec() is None
+    assert window._get_mosaic_run_spec() is None
+
+    # Applying a fresh simulation profile clears settings from the previous context.
+    assert window._apply_configuration(default_simulation_config())
+
+    def check_defaults(dialog: MosaicSetupDialog) -> int:
+        assert dialog.safe_z_box.value() == 0.0
+        assert dialog.resume_tile.value() == 1
+        assert dialog.run_tiling_two.isChecked()
+        dialog.reject()
+        return dialog.result()
+
+    monkeypatch.setattr(MosaicSetupDialog, "exec", check_defaults)
+    assert window._get_mosaic_run_spec() is None
 
 
 def test_main_window_starts_in_safe_simulation(qtbot: QtBot) -> None:

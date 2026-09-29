@@ -39,6 +39,8 @@ class MosaicSetupDialog(QDialog):
         current_pose: Pose,
         axis_limits: dict[AxisName, LimitsConfig | None] | None = None,
         parent: QWidget | None = None,
+        *,
+        initial_spec: MosaicSequenceSpec | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Set Up Mosaic Run")
@@ -151,6 +153,38 @@ class MosaicSetupDialog(QDialog):
         self.run_tiling_two.toggled.connect(self._set_tiling_two_enabled)
         self._set_tiling_two_enabled(True)
         self._update_summary()
+
+        # Restore accepted session settings after controls and validation signals exist.
+        if initial_spec is not None:
+            self._restore_spec(initial_spec)
+
+    def _restore_spec(self, spec: MosaicSequenceSpec) -> None:
+        """Restore both cards, including disabled geometry, under the current limits."""
+        # Suppress intermediate previews so partially restored geometry cannot alter resume.
+        for fields, tiling in zip(
+            self.fields, (spec.tiling_one, spec.tiling_two), strict=True
+        ):
+            values = {
+                "start_x": tiling.begin_x_mm,
+                "stop_x": tiling.end_x_mm,
+                "step_x": tiling.step_x_mm,
+                "start_y": tiling.begin_y_mm,
+                "stop_y": tiling.end_y_mm,
+                "step_y": tiling.step_y_mm,
+                "z": tiling.z_mm,
+                "rotation": tiling.rotation_deg,
+            }
+            for key, value in values.items():
+                fields[key].blockSignals(True)
+                fields[key].setValue(value)
+                fields[key].blockSignals(False)
+
+        # Resolve the selected tiling's tile range before restoring its resume tile.
+        self.safe_z_box.setValue(spec.safe_transition_z_mm)
+        self.run_tiling_two.setChecked(spec.run_tiling_two)
+        self.resume_tiling.setCurrentIndex(spec.resume_tiling - 1)
+        self._update_summary()
+        self.resume_tile.setValue(spec.resume_tile)
 
     def build_spec(self) -> MosaicSequenceSpec:
         """Build the validated full sequence currently displayed by the dialog."""

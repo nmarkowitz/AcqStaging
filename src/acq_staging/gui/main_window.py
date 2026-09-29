@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         # Startup accepts simulation profiles only and performs no automatic connection.
         self.config = config or default_simulation_config()
+        self._cached_mosaic_spec: MosaicSequenceSpec | None = None
         self.digital_service = DigitalIOService(
             self.config,
             build_digital_devices(self.config),
@@ -392,9 +393,12 @@ class MainWindow(QMainWindow):
                 if self.service.axes[axis].status().connected
             },
             self,
+            initial_spec=self._cached_mosaic_spec,
         )
         if not dialog.exec():
             return None
+        # Keep only accepted geometry; cancelling the editor preserves the previous run.
+        self._cached_mosaic_spec = dialog.validated_spec
         return dialog.validated_spec
 
     def _run_mosaic(
@@ -528,6 +532,8 @@ class MainWindow(QMainWindow):
         if self.connection_manager is not None:
             self.connection_manager.close_all()
         self.config = config
+        # A newly applied profile must start from its own defaults and coordinate context.
+        self._cached_mosaic_spec = None
         self.digital_service = DigitalIOService(config, digital_devices)
         self.acquisition_handshake = DaqTileHandshake(
             config.acquisition_handshake,
